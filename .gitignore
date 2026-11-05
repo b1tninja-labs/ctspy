@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+build/
+dist/
+.coverage
+htmlcov/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.hypothesis/
+*.log
+requirements-audit.txt
+
+# Working notes quote other projects' trackers and age faster than a tracked document
+# should. Evidence that survives gets promoted into README.md or ROADMAP.md with a date;
+# the scratch file itself never gets committed.
+docs/research.md
