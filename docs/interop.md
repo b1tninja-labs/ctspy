@@ -75,6 +75,29 @@ Three things this measurement produced:
    is visible in the suite rather than remembered by whoever found it. Inclusion is currently pinned by
    the specification's worked example only (`test_merkle.py`).
 
+## My tree hash, checked against production data
+
+`tests/fixtures/production-tree.json` holds the first **41 real entries** of Google Xenon2026h2, the
+signed head at tree size ~3.02 billion, and a `get-sth-consistency` proof for each of five prefixes of
+that entry block: 2, 3, 8, 13 and 41 entries. Each prefix root is computed by `ctspy` from the leaf
+bytes; the log then has to tie it to its own signature, and does, all five times.
+
+This is the evidence that the *tree hash* - not merely the proof verifier - matches a production
+implementation. Sizes 2 and 8 exercise section 2.1.4.2 step 2's prepend branch (which, it turns out,
+applies to `first == 1` as well); 13 and 41 are ragged, which is where split-point arithmetic is
+usually wrong. The test also flips one byte in the entry block and confirms the log's own proof stops
+verifying, so the five accepts are not a formality.
+
+Two deployment details the sweep produced:
+
+- **`get-entries` is capped at 32 entries per response** by Google's servers. RFC 6962 section 4.3
+  permits returning fewer than requested, and a client that assumes it received all 41 it asked for
+  computes the root of a 32-entry tree and reports it as the root of 41 - wrong in the direction that
+  looks entirely plausible. `fetch_leaves` observes the actual page size and asserts the count.
+- **The live head advanced during the sweep** (3,024,290,326 to 3,024,290,413), which the fixture
+  records rather than hides. It does not weaken anything: `second` was named explicitly in every
+  request, and a proof for the newer tree could not have folded onto the older signed root.
+
 ## A property of the algorithm, found by accident and pinned on purpose
 
 With `first == 1`, section 2.1.4.2's loop leaves `fn` at 0, so `fr` never moves and `second` ends up

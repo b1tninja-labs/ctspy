@@ -49,11 +49,13 @@ the code existing. Coverage in `pyproject.toml` ratchets in the same commit.
 - RFC 9162 is Experimental with 1 erratum on file and none verified: expect variation between implementations and pin tests to real logs.
 - **Measured against the deployed fleet, 2026-11-05** (`tools/fetch_evidence.py`, 23 operational logs
   across 5 operators): every log signs its own head as section 4.4 predicts, and a production
-  consistency proof from a 3-billion-entry tree verifies. Two differences from the specification text
-  matter for a client. `get-sth-consistency` answers with the field `consistency`, not section 4.6's
-  `audit_consistency`; and **no** operational log serves section 4.5's `get-inclusion-proof-by-hash`
-  (20 answered 404, two 403, one 429). Both are recorded in `docs/interop.md` with the fixture that
-  shows it, because "the RFC says X" stops being sufficient evidence the moment the fleet says Y.
+  consistency proof from a 3-billion-entry tree verifies, as do proofs for five prefixes of a 41-entry
+  block whose roots `ctspy` computed itself - which checks the tree hash, not only the proof verifier.
+  Three differences from the specification text matter for a client. `get-sth-consistency` answers with
+  the field `consistency`, not section 4.6's `audit_consistency`; **no** operational log serves section
+  4.5's `get-inclusion-proof-by-hash` (20 answered 404, two 403, one 429); and `get-entries` hands back
+  at most 32 entries whatever was asked. All three are recorded in `docs/interop.md` with the fixture
+  that shows it, because "the RFC says X" stops being sufficient evidence the moment the fleet says Y.
 
 - **Erratum 8670** (editorial, held for document update) touches the shift loops of sections 2.1.3.2
   step 4.b.ii and 2.1.4.2 step 6.b.iii: the printed text ends the loop on "until either LSB(fn) is

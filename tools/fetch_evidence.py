@@ -155,6 +155,124 @@ def sweep(out: pathlib.Path) -> list[str]:
     return [record["url"] for record in records if record["error"] is None]
 
 
+TREE_SIZES = (2, 3, 8, 13, 41)
+
+
+def fetch_leaves(origin: str, count: int, request: int = 64) -> tuple[list[str], int]:
+    """The first `count` leaf inputs, paging because logs cap how many they hand back.
+
+    Google's servers answer a request for 41 entries with 32. RFC 6962 section 4.3 allows that, and a
+    client that assumes it received what it asked for ends up computing the root of a 32-entry tree and
+    reporting it as the root of 41 - silently wrong, in the direction that looks plausible. So the
+    actual page size is observed on the first call and used to drive the rest, and the count is
+    asserted rather than trusted. The returned figure is the largest batch the server gave for a
+    request of that size, which is the cap itself - the final page is short only because the remainder
+    was short.
+    """
+    leaves: list[str] = []
+    observed = 0
+    start = 0
+    while len(leaves) < count:
+        want = min(request, count - len(leaves))
+        body = get_json(f"{origin}/ct/v1/get-entries?start={start}&end={start + want - 1}")
+        got = body["entries"]
+        if not got:
+            raise RuntimeError(f"{origin} returned no entries at index {start}")
+        observed = max(observed, len(got))
+        leaves.extend(entry["leaf_input"] for entry in got)
+        start += len(got)
+    return leaves[:count], observed
+
+
+def tree_sweep(out: pathlib.Path, origin: str) -> None:
+    """Build trees from real production entries and let the log vouch for them.
+
+    The property being tested is `tree_hash`, not the proof verifier: K entries are fetched from the
+    log's own `get-entries`, their root is computed here from scratch, and the question put to the log
+    is "prove that this tree you computed independently is a prefix of the tree you signed". If any
+    part of my MTH is wrong - a leaf prefix byte, a split point, an odd-size case - the fold cannot
+    land on the signed root, and no amount of self-consistency inside my code would hide that.
+
+    `second` is passed explicitly and the head is re-fetched afterwards, so every proof in the fixture
+    refers to one specific signed head rather than "whatever the tree looked like when asked". The
+    sizes are not incidental: 2 and 8 are exact powers of two, which take section 2.1.4.2 step 2's
+    prepend branch, and 13 and 41 are ragged, which is where split-point arithmetic goes wrong.
+    """
+    from ctspy import sth as sth_module
+
+    highest = max(TREE_SIZES)
+    raw_leaves, page_cap = fetch_leaves(origin, highest)
+    leaves = [base64.b64decode(item) for item in raw_leaves]
+    print(f"  fetched {len(leaves)} entries from {origin} (page cap {page_cap})")
+
+    head = get_json(f"{origin}/ct/v1/get-sth")
+    size = int(head["tree_size"])
+    root = base64.b64decode(head["sha256_root_hash"])
+
+    proofs: dict[str, dict] = {}
+    for count in TREE_SIZES:
+        mine = merkle.tree_hash(leaves[:count])
+        assert mine == merkle.tree_hash_recursive(leaves[:count]), f"two MTHs disagree at {count}"
+        answer = get_json(f"{origin}/ct/v1/get-sth-consistency?first={count}&second={size}")
+        nodes, field_name = consistency_nodes(answer)
+        audit = tuple(base64.b64decode(node) for node in nodes)
+        verified = merkle.verify_consistency(count, size, audit, mine, root)
+        print(
+            f"  tree of {count:>2} real entries -> root {mine.hex()[:16]}... consistent: {verified}"
+        )
+        if not verified:
+            raise RuntimeError(
+                f"the log refused to tie its own {count} entries to its own signed head; that is a "
+                "finding about tree_hash, not a reason to relax the check"
+            )
+        proofs[str(count)] = {
+            "field": field_name,
+            "nodes": nodes,
+            "root": base64.b64encode(mine).decode(),
+        }
+
+    after = get_json(f"{origin}/ct/v1/get-sth")
+    if after != head:
+        # Not a reason to discard the run. `second` was named explicitly in each request, and every
+        # proof above folded onto the recorded head's root, which is the strongest possible evidence
+        # that it refers to that size - a proof for a newer tree could not have landed there. The
+        # earlier version of this check demanded an idle log, copied from the by-hash sweep where the
+        # proof *is* implicitly for the current tree; on a log taking thousands of entries a minute
+        # that made the tool fail for no reason.
+        print(
+            f"  note: the live tree grew during the sweep ({size} -> {after['tree_size']}); "
+            "the fixture records the head at " + str(size) + ", which all five proofs matched"
+        )
+
+    key = find_key(origin)
+    sth_module.verify(sth_module.SignedTreeHeadV1.from_v1_json(head), key)
+
+    payload = {
+        "provenance": {
+            "fetched_utc": now(),
+            "origin": origin,
+            "note": "Verbatim get-entries leaves (the first "
+            + str(highest)
+            + ", paged because this "
+            "log caps the response) and one get-sth-consistency response per tree size, all against "
+            "the single recorded head. The roots in `proofs` are computed by ctspy from these leaf "
+            "bytes, not supplied by the log.",
+        },
+        "origin": origin,
+        "key": base64.b64encode(key.spki).decode(),
+        "head": head,
+        "tree_size": size,
+        "head_after_sweep": after["tree_size"],
+        "entries_page_cap": page_cap,
+        "leaf_inputs": raw_leaves,
+        "proofs": proofs,
+    }
+    (out / "production-tree.json").write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    print(f"wrote {out / 'production-tree.json'} ({highest} entries, {len(TREE_SIZES)} tree sizes)")
+
+
 def consistency_nodes(body: dict) -> tuple[list[str], str]:
     """The audit path, wherever this log chose to put it.
 
@@ -332,6 +450,10 @@ def main() -> int:
     )
     parser.add_argument("--skip-sweep", action="store_true", help="only refresh the proofs")
     parser.add_argument(
+        "--skip-proofs", action="store_true", help="do not refetch the proof fixture"
+    )
+    parser.add_argument("--skip-tree", action="store_true", help="do not refetch the entry block")
+    parser.add_argument(
         "--max-alternates",
         type=int,
         default=8,
@@ -342,7 +464,10 @@ def main() -> int:
     urls = sweep(args.out) if not args.skip_sweep else cached_urls(args.out)
     origin = args.origin.rstrip("/")
     alternates = [url for url in urls if url != origin][: args.max_alternates]
-    proofs(args.out, origin, alternates)
+    if not args.skip_proofs:
+        proofs(args.out, origin, alternates)
+    if not args.skip_tree:
+        tree_sweep(args.out, origin)
     return 0
 
 
