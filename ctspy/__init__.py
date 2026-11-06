@@ -5,14 +5,29 @@ CT is the audit trail for the whole Web PKI and Python cannot read it.
 
 from __future__ import annotations
 
-from . import apps, cli, client, ecdsa, errors, merkle, monitor, policy, sct, sth, tiles, transcript
+from . import (
+    apps,
+    cli,
+    client,
+    ecdsa,
+    entry,
+    errors,
+    merkle,
+    monitor,
+    policy,
+    sct,
+    sth,
+    tiles,
+    transcript,
+)
 from .client import add_chain
 from .ecdsa import EcdsaKey
+from .entry import MerkleTreeLeaf
 from .errors import CtspyError, VerificationError
 from .merkle import verify_consistency, verify_inclusion
 from .monitor import watch
 from .policy import acceptable
-from .sct import parse, verify
+from .sct import SignedCertificateTimestamp, parse, parse_list, verify
 from .sth import SignedTreeHeadV1, SignedTreeHeadV2
 from .tiles import fetch_tile
 from .transcript import Extension, Reader, TranscriptError, Writer
@@ -23,7 +38,9 @@ __all__ = [
     "CtspyError",
     "EcdsaKey",
     "Extension",
+    "MerkleTreeLeaf",
     "Reader",
+    "SignedCertificateTimestamp",
     "SignedTreeHeadV1",
     "SignedTreeHeadV2",
     "TranscriptError",
@@ -36,11 +53,13 @@ __all__ = [
     "cli",
     "client",
     "ecdsa",
+    "entry",
     "errors",
     "fetch_tile",
     "merkle",
     "monitor",
     "parse",
+    "parse_list",
     "policy",
     "sct",
     "sth",

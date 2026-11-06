@@ -18,8 +18,8 @@ drift apart within one release, and the document becomes useless exactly when it
 
 | Obligation | Spec | Status | Where |
 |---|---|---|---|
-| `sct.parse()` | RFC 9162 | `[ ]` | not implemented; the stub is loud, `test_public_api.py::test_stubs_are_loud` covers it |
-| `sct.verify()` | RFC 9162 | `[ ]` | not implemented; the transcript shape is settled for STHs, not yet for entries |
+| `sct.parse()` | RFC 6962 section 3.2 (v1, deployed; obsoleted by RFC 9162, whose section 4.8 v2 shape this is not) | `[ok]` | `tests/test_scts.py::test_the_wire_format_offsets_are_what_section_32_declares` |
+| `sct.verify()` | RFC 6962 section 3.2 (v1); RFC 9162 obsoletes the format and v2 is unimplemented | `[ok]` | `tests/test_scts.py::test_a_real_leaf_and_a_signature_from_openssl_verify` |
 | `sth.verify()` | RFC 9162 | `[ok]` | `tests/test_sth.py::test_production_sths_verify_against_their_published_keys` |
 | `merkle.verify_inclusion()` | RFC 9162 | `[ok]` | `tests/test_merkle.py::test_the_published_inclusion_proofs_verify` |
 | `merkle.verify_consistency()` | RFC 9162 | `[ok]` | `tests/test_merkle.py::test_the_published_consistency_proofs_verify` |
@@ -76,12 +76,26 @@ the code existing. Coverage in `pyproject.toml` ratchets in the same commit.
 
 ## 5. Open questions
 
-- none recorded yet
+- **No production SCT signature has been verified end to end.** The fleet evidence covers STHs, tree
+  heads, consistency proofs and SCT *parsing*; the signatures in `live-scts.json` are precert SCTs whose
+  transcript needs the precertificate signing certificate. The recipe that would obtain one is in
+  `docs/interop.md` (a merged log's `extra_data`, minus the SCT extension). Until that is done,
+  `sct.verify` is pinned by OpenSSL over production leaf bytes, not by a log's own signature.
+- **No log serves an inclusion proof**, so inclusion rests on the specification's worked example plus the
+  entry-block proofs in `production-tree.json`. Is that a deployment gap or a reading of section 4.5?
+  Nobody who asked got a different answer than 404.
+- **v2 has no one to interoperate with.** `TransItem`, v2 SCTs and tile fetching are specified in
+  RFC 9162 and unimplemented or untested against a server here, because no v2 log is in the log list.
+  Writing them first means writing code nobody has confirmed reads the same bytes.
+- **Ed25519** is registered by section 10.2.2 (0x0807) and deliberately unimplemented; a log declaring it
+  currently fails at pin-load, loudly. Is loud refusal enough until a log actually uses it?
 
 ## 6. Publication checklist
 
 - [ ] every `[ ]` row above either `[ok]` or moved to a named later milestone
 - [ ] `docs/research.md` claims re-verified and the dated ones either promoted or deleted
-- [ ] interoperability evidence recorded in `docs/` against a non-Python implementation
+- [x] interoperability evidence recorded in `docs/` against a non-Python implementation
+      (`docs/interop.md`: 23 operational logs across 5 operators, production consistency proofs against
+      roots this library computed itself, 15 SCTs from live certificates)
 - [ ] `tools/check_dist.py` proves the wheel ships the fixtures the README promises
 - [ ] version 0.1.0 tagged, trusted publisher configured, README badges uncommented

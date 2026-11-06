@@ -29,6 +29,8 @@ import datetime
 import hashlib
 import json
 import pathlib
+import socket
+import ssl
 import sys
 import time
 import urllib.error
@@ -440,6 +442,118 @@ def cached_urls(out: pathlib.Path) -> list[str]:
     return [record["url"] for record in document["logs"] if record["error"] is None]
 
 
+SCT_HOSTS = (
+    "www.google.com",
+    "www.cloudflare.com",
+    "github.com",
+    "www.microsoft.com",
+    "apple.com",
+    "letsencrypt.org",
+)
+SCT_OID_DER = bytes.fromhex("060a2b06010401d679020402")  # 1.3.6.1.4.1.11129.2.4.2
+
+
+def der_length(data: bytes, offset: int) -> tuple[int, int]:
+    """(value, bytes consumed) for a DER length at `offset`."""
+    first = data[offset]
+    if first < 0x80:
+        return first, 1
+    count = first & 0x7F
+    return int.from_bytes(data[offset + 1 : offset + 1 + count], "big"), 1 + count
+
+
+def sct_extension_payload(cert_der: bytes) -> bytes | None:
+    """The SCT list bytes inside a certificate, found by scanning the DER.
+
+    This lives in the evidence tool and not in `ctspy` on purpose: locating an extension is X.509
+    parsing, and the library takes no X.509 dependency. `cryptography` parses this extension into its
+    own type and will not return the original bytes, and the original bytes are the point - the question
+    is whether ctspy can read what a log wrote, not whether two libraries agree on a re-encoding.
+
+    The list comes back out of two nested OCTET STRINGs: the extension value is one (X.509 says so of
+    every extension), and inside it the `digitally-signed struct` of RFC 5246 is another. The TLS
+    extension has neither wrapper, which is the trap: strip one layer and the parser reads a tag byte
+    as a length.
+    """
+    start = 0
+    while (index := cert_der.find(SCT_OID_DER, start)) != -1:
+        cursor = index + len(SCT_OID_DER)
+        if cert_der[cursor : cursor + 1] == b"\x01":  # critical BOOLEAN
+            cursor += 3
+        if cert_der[cursor : cursor + 1] != b"\x04":
+            start = index + 1
+            continue
+        cursor += 1
+        outer, used = der_length(cert_der, cursor)
+        cursor += used
+        block = cert_der[cursor : cursor + outer]
+        if block[:1] == b"\x04":
+            inner, used = der_length(block, 1)
+            return block[1 + used : 1 + used + inner]
+        return block
+    return None
+
+
+def peer_certificate(host: str) -> bytes:
+    context = ssl.create_default_context()
+    with socket.create_connection((host, 443), timeout=20) as sock:  # noqa: SIM117
+        with context.wrap_socket(sock, server_hostname=host) as tls:
+            der = tls.getpeercert(binary_form=True)
+    if not der:
+        raise RuntimeError(f"{host}: no certificate offered")
+    return der
+
+
+def sct_sweep(out: pathlib.Path) -> None:
+    """Real SCTs from live certificates, parsed by the same code the tests exercise.
+
+    Evidence for the wire format, and an honest record of what it does not prove. These are
+    **precert** SCTs - the embedded certificate extension carries those - so they are signatures over
+    `issuer_key_hash | TBSCertificate-without-the-SCT-extension`, which a handshake does not provide:
+    the hash is of the precertificate signing certificate, which the final chain need not contain. So
+    the SCTs here are evidence about parsing and about log identity, and `tests/test_production_scts.py`
+    asserts that they do *not* verify over an x509_entry transcript, which is the failure mode of a
+    verifier that had gotten the transcript wrong in the flattering direction.
+    """
+    from ctspy import sct as sct_module
+
+    documents = []
+    for host in SCT_HOSTS:
+        try:
+            der = peer_certificate(host)
+            payload = sct_extension_payload(der)
+        except Exception as exc:  # a host that will not answer is recorded, not fatal
+            documents.append({"host": host, "error": f"{type(exc).__name__}: {exc}"})
+            continue
+        if payload is None:
+            documents.append({"host": host, "error": "no embedded SCT list"})
+            print(f"  {host}: no embedded SCT list")
+            continue
+        items = sct_module.parse_list(payload)
+        documents.append(
+            {
+                "host": host,
+                "cert_der": base64.b64encode(der).decode(),
+                "sct_list": base64.b64encode(payload).decode(),
+                "count": len(items),
+            }
+        )
+        print(f"  {host}: {len(items)} SCTs parsed")
+    payload_document = {
+        "provenance": {
+            "fetched_utc": now(),
+            "note": "Leaf certificates and their embedded SignedCertificateTimestampLists, taken from "
+            "TLS handshakes to public services. Certificates are public and the connections are "
+            "read-only; nothing is submitted to any log.",
+        },
+        "documents": documents,
+    }
+    (out / "live-scts.json").write_text(
+        json.dumps(payload_document, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    print(f"wrote {out / 'live-scts.json'} ({len(documents)} certificates)")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--out", type=pathlib.Path, default=pathlib.Path("tests/fixtures"))
@@ -453,6 +567,7 @@ def main() -> int:
         "--skip-proofs", action="store_true", help="do not refetch the proof fixture"
     )
     parser.add_argument("--skip-tree", action="store_true", help="do not refetch the entry block")
+    parser.add_argument("--skip-scts", action="store_true", help="do not refetch live certificates")
     parser.add_argument(
         "--max-alternates",
         type=int,
@@ -468,6 +583,8 @@ def main() -> int:
         proofs(args.out, origin, alternates)
     if not args.skip_tree:
         tree_sweep(args.out, origin)
+    if not args.skip_scts:
+        sct_sweep(args.out)
     return 0
 
 

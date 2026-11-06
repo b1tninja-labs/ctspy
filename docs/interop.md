@@ -98,6 +98,40 @@ Two deployment details the sweep produced:
   records rather than hides. It does not weaken anything: `second` was named explicitly in every
   request, and a proof for the newer tree could not have folded onto the older signed root.
 
+## SCTs from the live Web: parsed, not verified, and why those are different claims
+
+`tests/fixtures/live-scts.json` holds six leaf certificates taken from public services over read-only
+TLS handshakes, with their embedded `SignedCertificateTimestampList` bytes: **15 SCTs**, at least eight
+of which name a log present in the fleet sweep. `tests/test_production_scts.py` confirms each parses
+with nothing left over, re-serialises to the same bytes, and that each matched `log_id` equals SHA-256
+over that log's published key. That is evidence about the wire format and the identity binding.
+
+Those signatures are **not** verified, and the reason is worth writing down because it is the sort of
+thing that quietly turns a green suite into a false claim. The embedded certificate extension carries
+*precert* SCTs. Their transcript is `issuer_key_hash | TBSCertificate-without-the-SCT-extension`, and a
+handshake supplies neither piece: the hash is of the precertificate signing certificate, which the
+final chain is not obliged to contain. The test therefore asserts the negative - each of those SCTs
+must be **refused** when handed the `x509_entry` transcript built from the certificate - which is the
+failure mode a verifier with the wrong transcript would have shown instead.
+
+The route that would close it, recorded so the next person does not re-derive it: fetch a **merged
+log's** `get-entries` for an older entry. Its `extra_data` contains the stored precert *and* the issuer
+chain, including the precertificate signing certificate. Strip the SCT extension from the precert's TBS
+(the reconstruction RFC 6962 section 3.2 itself describes), hash the signing certificate's SPKI, and the
+SCTs embedded in that precert - issued by the source logs - become verifiable. It needs DER surgery,
+which is why it is the next task rather than this one.
+
+Two format findings from the same run:
+
+- **The X.509 form double-wraps.** The extension value is a `digitally-signed struct`, which RFC 5246
+  encodes as an OCTET STRING, nested inside the OCTET STRING that carries every X.509 extension value.
+  The TLS extension has neither wrapper. Strip only one layer and a parser reads `0x0481` - a tag and a
+  length - as a list length of 1153, and the error looks like corrupt data rather than a missing
+  wrapper. `sct.parse_list`'s docstring says so; the tool does the stripping.
+- **The embedded extension's OID is `06 0A 2B 06 01 04 01 D6 79 02 04 02`.** Hand-encoding
+  1.3.6.1.4.1.11129.2.4.2 is where the 11129 → `D6 79` base-128 arithmetic bites; the first attempt at
+  this constant found nothing on any host, which is the failure mode of getting it wrong.
+
 ## A property of the algorithm, found by accident and pinned on purpose
 
 With `first == 1`, section 2.1.4.2's loop leaves `fn` at 0, so `fr` never moves and `second` ends up
