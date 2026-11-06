@@ -9,6 +9,7 @@ reads confidence where there was only silence.
 from __future__ import annotations
 
 import importlib
+import pathlib
 
 import pytest
 
@@ -46,9 +47,34 @@ def test_surface_is_documented(module_name, fn, cite):
 
 @pytest.mark.parametrize(("module_name", "fn", "cite"), SURFACE)
 def test_stubs_are_loud(module_name, fn, cite):
+    """A stub must raise; an implementation must be claimed in the roadmap. No third state.
+
+    This used to `pytest.skip` once a function was implemented, which quietly removed three checks
+    from the run and left the obligation matrix free to lag: code lands, the row still says `[ ]`,
+    and nothing notices because the test that could have noticed had skipped itself. The row is now
+    part of the assertion, so the matrix cannot drift from the surface without going red.
+    """
     module = importlib.import_module(package.__name__ + "." + module_name)
     target = getattr(module, fn)
+    label = f"`{module_name}.{fn}()`"
     if "Not implemented yet" not in (target.__doc__ or ""):
-        pytest.skip(fn + " is implemented; pin it with a real vector test now")
+        status = roadmap_status(label)
+        assert status == "[ok]", (
+            f"{label} is implemented but ROADMAP.md records it as {status!r}; close the row with "
+            "the test that pins it, or make the stub loud again"
+        )
+        return
     with pytest.raises((NotImplementedError, TypeError)):
         target()
+
+
+def roadmap_status(label: str) -> str | None:
+    """The status cell of this obligation's row in ROADMAP.md, or None if it has no row."""
+    roadmap = pathlib.Path(package.__file__).resolve().parents[1] / "ROADMAP.md"
+    for line in roadmap.read_text(encoding="utf-8").splitlines():
+        if not line.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if len(cells) >= 3 and cells[0] == label:
+            return cells[2].strip("`")
+    return None
