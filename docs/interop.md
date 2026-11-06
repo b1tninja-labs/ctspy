@@ -106,20 +106,13 @@ of which name a log present in the fleet sweep. `tests/test_production_scts.py` 
 with nothing left over, re-serialises to the same bytes, and that each matched `log_id` equals SHA-256
 over that log's published key. That is evidence about the wire format and the identity binding.
 
-Those signatures are **not** verified, and the reason is worth writing down because it is the sort of
-thing that quietly turns a green suite into a false claim. The embedded certificate extension carries
-*precert* SCTs. Their transcript is `issuer_key_hash | TBSCertificate-without-the-SCT-extension`, and a
-handshake supplies neither piece: the hash is of the precertificate signing certificate, which the
-final chain is not obliged to contain. The test therefore asserts the negative - each of those SCTs
-must be **refused** when handed the `x509_entry` transcript built from the certificate - which is the
-failure mode a verifier with the wrong transcript would have shown instead.
-
-The route that would close it, recorded so the next person does not re-derive it: fetch a **merged
-log's** `get-entries` for an older entry. Its `extra_data` contains the stored precert *and* the issuer
-chain, including the precertificate signing certificate. Strip the SCT extension from the precert's TBS
-(the reconstruction RFC 6962 section 3.2 itself describes), hash the signing certificate's SPKI, and the
-SCTs embedded in that precert - issued by the source logs - become verifiable. It needs DER surgery,
-which is why it is the next task rather than this one.
+Those signatures are **not** verified here, and the reason is worth writing down because it is the sort
+of thing that quietly turns a green suite into a false claim. The embedded certificate extension carries
+*precert* SCTs. Their transcript is `issuer_key_hash | TBSCertificate-without-the-SCT-extension`, and
+`getpeercert` supplies neither piece. The test therefore asserts the negative - each of those SCTs must be
+**refused** when handed the `x509_entry` transcript built from the certificate - which is the failure mode
+a verifier with the wrong transcript would have shown instead. The positive case is
+`tests/test_production_sct_signatures.py`.
 
 Two format findings from the same run:
 
@@ -131,6 +124,72 @@ Two format findings from the same run:
 - **The embedded extension's OID is `06 0A 2B 06 01 04 01 D6 79 02 04 02`.** Hand-encoding
   1.3.6.1.4.1.11129.2.4.2 is where the 11129 → `D6 79` base-128 arithmetic bites; the first attempt at
   this constant found nothing on any host, which is the failure mode of getting it wrong.
+
+## Six log signatures, verified: how the precert transcript is actually rebuilt
+
+The gap above is closed. `tools/fetch_evidence.py`'s `sct_signatures` now records cases in which this
+library verified a **real log's real signature over a real certificate**: six certificates from six
+public services, six different logs (`TrustAsia log2026a`, `Google Argon2027h1`, `Google Xenon2027h1`,
+`DigiCert Sphinx2026h2`, `DigiCert Sphinx2027h1`, `Cloudflare Nimbus2027`), four operators. The
+fixture is `tests/fixtures/live-sct-signatures.json` and the checks are offline.
+
+The reconstruction is RFC 6962 section 3.2's own: take the certificate's `TBSCertificate`, delete the SCT
+extension, and hash the **issuer's** `SubjectPublicKeyInfo`. Three things had to be got right, and each
+was learned by failing:
+
+1. **The issuer must come from the chain the server sent, not the chain OpenSSL built.**
+   `get_unverified_chain`, not `get_verified_chain`. A CA that signs precertificates with a separate
+   precertificate signing certificate leaves that certificate out of the built path, because path
+   building has no use for it - and that certificate's key is precisely what the SCT's `issuer_key_hash`
+   commits to. With the built path: 100 attempts, 0 verified. With the sent chain: 12 attempts, 6
+   verified, every one at `chain[1]`, the leaf's issuer. The failures are kept in the fixture as
+   `attempts`, and a test asserts that attempts exceed successes rather than letting a success-only
+   capture look like a clean run.
+2. **Deleting an extension means re-encoding three lengths** - the extension list, its `[3]` wrapper, and
+   the TBS itself. The log hashed the shortened DER, not the original with a hole cut in it.
+3. **`elements()` walks a list of TLVs, not one encoded value.** Passing it a TLV made it see a single
+   element, report no extensions, and strip nothing - so every reconstruction came out exactly 21 bytes
+   long (the poison extension's own DER size) and the mismatch looked like a protocol puzzle. The tell was
+   that the delta was *constant*: real protocol variation is not that tidy, and a constant difference
+   between two DER structures is a caller bug with high probability. Confirmed against ground truth before
+   anything was claimed - see below.
+
+**Ground truth, which is what made this trustworthy.** A log's precert entry stores both sides of the
+question: `leaf_input` contains the `PreCert` it hashed (`issuer_key_hash` and the exact
+`TBSCertificate`), while `extra_data` contains the precert as submitted plus the issuer chain. Stripping
+the **poison** extension from that stored precert reproduces the logged `TBSCertificate` byte for byte, and
+`issuer_key_hash` equals SHA-256 over the SPKI of `issuer_chain[0]`. That check needs no signature to
+interpret, which is why it ran before any signature claim was written down - and it is now a tool rather
+than a memory:
+
+    python tools/check_precert_reconstruction.py --origin https://ct.cloudflare.com/logs/nimbus2026
+
+Measured across three independent implementations: Google Argon2026h2 **8/8**, DigiCert Wyvern2026h2
+**6/6**, Cloudflare Nimbus2026 **15/15** - **29 of 29**, exits non-zero on any mismatch. Cloudflare's Nimbus
+is a separate codebase in C++, so the reconstruction rule is not a reading of one implementation's quirks.
+
+**A claim of mine that measurement killed.** The earlier version of this file said the route to a
+production SCT was "a merged log's `extra_data`, minus the SCT extension". Wrong: a stored precert is the
+precert *as submitted*, which carries the **poison** extension and no SCTs at all, because the SCTs a CA
+later embeds in the final certificate were never part of what the log received. Twenty recent entries
+across two logs, none with an embedded list. The SCTs live on the final certificate, so the live
+certificate is the only place to get one - and the reconstruction works there for the same reason it
+works in the log: it is the same operation applied to the extension the CA swapped in.
+
+A second finding from the same sweep, unexplained and recorded as such: for the **merged** entries at
+Argon2026h2's indices 0-9, the stored `leaf_input` and `extra_data` do not correspond the way they do for
+recently submitted entries - the logged TBS differs from the stored precert's by 11 bytes and diverges
+from byte 4 onward, rather than by exactly one extension. Direct submissions reconstruct cleanly, so
+nothing here depends on the merged case, but a client that assumes `extra_data` and `leaf_input` describe
+the same structure in a static-merge log would be wrong, and nobody has told me why.
+
+One more thing the real world threw up, filed because `certledger` will meet it: walking a chain served by
+a production log produced a certificate whose **serial number is not positive**, which RFC 5280 forbids.
+`cryptography` warns today and intends to raise; a strict parser will refuse to load a certificate that a
+log accepted, stored, and hashed into its tree. Whether such an entry's leaf hash is even well-defined
+for a verifier depends on which parser was used, so the answer belongs in the fetch layer's threat model
+rather than in a warning nobody reads.
+
 
 ## A property of the algorithm, found by accident and pinned on purpose
 

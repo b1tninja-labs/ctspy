@@ -449,8 +449,44 @@ SCT_HOSTS = (
     "www.microsoft.com",
     "apple.com",
     "letsencrypt.org",
+    "www.wikipedia.org",
+    "www.mozilla.org",
+    "www.amazon.com",
+    "www.paypal.com",
+    "www.chase.com",
+    "www.bankofamerica.com",
+    "www.godaddy.com",
+    "www.nordvpn.com",
+    "www.duckduckgo.com",
+    "www.eff.org",
+    "www.apache.org",
+    "www.debian.org",
+    "www.python.org",
 )
 SCT_OID_DER = bytes.fromhex("060a2b06010401d679020402")  # 1.3.6.1.4.1.11129.2.4.2
+POISON_OID_DER = bytes.fromhex("060a2b06010401d679020403")  # 1.3.6.1.4.1.11129.2.4.3
+
+
+def parse_extra_data(extra: bytes) -> tuple[bytes, list[bytes]]:
+    """`ASN.1Cert` then `ASN.1Cert<1..2^24-1>` - the same shape for both v1 entry types.
+
+    For an x509 entry the first value is the leaf certificate and the second the chain the submitter
+    provided; for a precert entry it is the precert as submitted and its issuer chain. Note what this
+    does *not* contain: the SCT the log issued. That was in the HTTP response, never in the tree, which
+    is why a log's own signature cannot be recovered from its own entries.
+    """
+    subject, cursor = opaque3(extra, 0)
+    total, _ = opaque3(extra, cursor)
+    chain, inner = [], 0
+    while inner < len(total):
+        cert, inner = opaque3(total, inner)
+        chain.append(cert)
+    return subject, chain
+
+
+def opaque3(data: bytes, offset: int) -> tuple[bytes, int]:
+    length = int.from_bytes(data[offset : offset + 3], "big")
+    return data[offset + 3 : offset + 3 + length], offset + 3 + length
 
 
 def der_length(data: bytes, offset: int) -> tuple[int, int]:
@@ -554,6 +590,248 @@ def sct_sweep(out: pathlib.Path) -> None:
     print(f"wrote {out / 'live-scts.json'} ({len(documents)} certificates)")
 
 
+def all_logs() -> dict:
+    """Every log in the list, retired included, keyed by log id: an SCT outlives its log's usability.
+
+    The sweep uses only live logs because it is evidence about today's format. This needs the opposite
+    scope: an SCT embedded in a certificate issued years ago was made by a log that is retired now, and
+    its key is still the key that signed it.
+    """
+    document = get_json(LOG_LIST)
+    directory = {}
+    for operator in document.get("operators", []):
+        for log in operator.get("logs", []):
+            declared = log.get("state") or log.get("status")
+            state = next(iter(declared), "?") if isinstance(declared, dict) else declared
+            directory[base64.b64decode(log["log_id"])] = (
+                f"{log.get('description', '?')} [{state}]",
+                base64.b64decode(log["key"]),
+                state,
+            )
+    return directory
+
+
+def der_len(value: int) -> bytes:
+    if value < 0x80:
+        return bytes([value])
+    body = value.to_bytes((value.bit_length() + 7) // 8, "big")
+    return bytes([0x80 | len(body)]) + body
+
+
+def der_tlv(data: bytes, offset: int) -> tuple[int, int, int]:
+    """(tag, content_start, content_end) for the DER element at `offset`."""
+    tag = data[offset]
+    cursor = offset + 1
+    first = data[cursor]
+    if first < 0x80:
+        length, cursor = first, cursor + 1
+    else:
+        count = first & 0x7F
+        length = int.from_bytes(data[cursor + 1 : cursor + 1 + count], "big")
+        cursor = cursor + 1 + count
+    return tag, cursor, cursor + length
+
+
+def der_elements(data: bytes) -> list[tuple[int, int, int, int, int]]:
+    """(tag, start, end, content_start, content_end) per element of `data`'s content."""
+    out, cursor = [], 0
+    while cursor < len(data):
+        _, content_start, content_end = der_tlv(data, cursor)
+        out.append((data[cursor], cursor, content_end, content_start, content_end))
+        cursor = content_end
+    return out
+
+
+def der_content(der: bytes) -> bytes:
+    """The content octets of one encoded value.
+
+    `der_elements` walks a *list* of elements, so handing it an encoded value makes it see exactly one
+    element and report the structure as empty. That is what happened here: an extension stripper deleted
+    nothing, every reconstruction mismatched by a constant amount, and the evidence pointed at a protocol
+    mystery instead of at this caller error.
+    """
+    _, start, end = der_tlv(der, 0)
+    return der[start:end]
+
+
+def tbs_of(cert_der: bytes) -> bytes:
+    """The TBSCertificate's exact bytes: the first element inside the certificate SEQUENCE."""
+    _, body_start, body_end = der_tlv(cert_der, 0)
+    first = der_elements(cert_der[body_start:body_end])[0]
+    return cert_der[body_start + first[1] : body_start + first[2]]
+
+
+def strip_extension(tbs: bytes, oid_der: bytes) -> bytes:
+    """Delete one extension from a TBSCertificate, re-encoding every enclosing length.
+
+    RFC 6962 section 3.2 says the logged TBSCertificate can be recovered from the final certificate "by
+    extracting the TBSCertificate from it and deleting the SCT extension". The log hashed the re-encoded
+    DER, not the original with a hole in it, so the extension list, its `[3]` wrapper and the TBS itself
+    all need fresh lengths. Checked against ground truth rather than assumed: against the precert entries
+    logs store, this reproduces the logged `TBSCertificate` byte for byte, 29 times out of 29 across
+    Google, DigiCert and Cloudflare (`tools/check_precert_reconstruction.py`).
+    """
+    body = der_content(tbs)
+    block = next((item for item in der_elements(body) if item[0] == 0xA3), None)
+    if block is None:
+        return tbs
+    _, _, _, a3_cs, a3_ce = block
+    wrapper = der_elements(body[a3_cs:a3_ce])[0]
+    seq_cs, seq_ce = a3_cs + wrapper[3], a3_cs + wrapper[4]
+    every = der_elements(body[seq_cs:seq_ce])
+    kept = [
+        body[seq_cs + item[1] : seq_cs + item[2]]
+        for item in every
+        if oid_der not in body[seq_cs + item[1] : seq_cs + item[2]]
+    ]
+    if len(kept) == len(every):
+        return tbs
+    inner = b"\x30" + der_len(sum(len(item) for item in kept)) + b"".join(kept)
+    outer = b"\xa3" + der_len(len(inner)) + inner
+    new_body = body[: block[1]] + outer + body[block[2] :]
+    return b"\x30" + der_len(len(new_body)) + new_body
+
+
+def peer_chain(host: str) -> tuple[bytes, list[bytes]]:
+    """The certificate a host presents, and every certificate it sends.
+
+    `get_unverified_chain`, deliberately: path building drops a precertificate signing certificate
+    because the path does not need it, and that certificate's key is exactly what a precert SCT's
+    `issuer_key_hash` commits to. Using the verified path is why the first hundred attempts here verified
+    nothing.
+    """
+    context = ssl.create_default_context()
+    with socket.create_connection((host, 443), timeout=20) as sock:  # noqa: SIM117
+        with context.wrap_socket(sock, server_hostname=host) as tls:
+            der = tls.getpeercert(binary_form=True)
+            served = list(tls.get_unverified_chain() or [])
+    if not der:
+        raise RuntimeError(f"{host}: no certificate offered")
+    return der, served
+
+
+def spki_der(cert_der: bytes) -> bytes:
+    """The DER SubjectPublicKeyInfo of a certificate - the thing the log id and issuer hash are over."""
+    from cryptography import x509
+    from cryptography.hazmat.primitives import serialization
+
+    return (
+        x509.load_der_x509_certificate(cert_der)
+        .public_key()
+        .public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+    )
+
+
+def item_wire(item) -> bytes:
+    """An SCT back to its wire bytes, so the fixture stores what was on the wire, not a summary."""
+    from ctspy.transcript import Writer
+
+    return (
+        Writer()
+        .uint8(item.version)
+        .raw(item.log_id)
+        .uint64(item.timestamp)
+        .opaque(item.extensions, length_bytes=2, minimum=0, maximum=65535)
+        .uint8(item.hash_algorithm)
+        .uint8(item.signature_algorithm)
+        .opaque(item.signature, length_bytes=2, minimum=1, maximum=65535)
+        .build()
+    )
+
+
+def sct_signatures(out: pathlib.Path) -> None:
+    """Production SCT signatures, verified end to end, with the inputs needed to check them offline.
+
+    The transcript an embedded SCT covers is `issuer_key_hash | TBSCertificate-without-the-SCT-extension`
+    (RFC 6962 section 3.2), and every input is obtainable from a handshake: the certificate, the chain the
+    server sent, and the reconstruction the specification itself describes - "extracting the
+    TBSCertificate from it and deleting the SCT extension". Two details matter and were both learned the
+    hard way. The issuer must be taken from the chain the server *sent* (`get_unverified_chain`), not the
+    path OpenSSL built: a CA that signs precertificates with a separate precertificate signing
+    certificate leaves that certificate out of the built path, and it is the key the SCT's hash commits
+    to. And the extension must be deleted with the three enclosing lengths re-encoded, because the log
+    hashed the shortened DER, not the original with a hole in it.
+
+    Each recorded case is one certificate that yielded at least one signature this library verified.
+    The reconstruction is stored alongside the certificate it came from so a test can redo the surgery
+    and confirm it still lands, rather than trusting a transcript this tool computed.
+    """
+    from ctspy import sct as sct_module
+    from ctspy.entry import MerkleTreeLeaf, PrecertEntry, TimestampedEntry
+
+    directory = all_logs()
+    cases: list[dict] = []
+    verified = attempts = 0
+    for host in SCT_HOSTS:
+        if len(cases) >= 6:
+            break
+        try:
+            der, served = peer_chain(host)
+        except Exception as exc:  # a host that will not answer is not a finding
+            print(f"  {host}: {type(exc).__name__}: {exc}")
+            continue
+        payload = sct_extension_payload(der)
+        if payload is None:
+            print(f"  {host}: no embedded SCT list")
+            continue
+        base_tbs = tbs_of(der)
+        tbs = strip_extension(base_tbs, SCT_OID_DER)
+        for item in sct_module.parse_list(payload):
+            known = directory.get(item.log_id)
+            if known is None:
+                continue
+            label, key_der, _state = known
+            key = EcdsaKey.from_spki(key_der)
+            for index, issuer in enumerate(served):
+                issuer_hash = hashlib.sha256(spki_der(issuer)).digest()
+                entry = TimestampedEntry(
+                    timestamp=item.timestamp,
+                    entry=PrecertEntry(issuer_hash, tbs),
+                    extensions=b"",
+                )
+                leaf = MerkleTreeLeaf.parse(b"\x00\x00" + entry.transcript())
+                attempts += 1
+                try:
+                    sct_module.verify(item, leaf, key)
+                except Exception:  # noqa: S112 - an issuer that does not match is the expected case
+                    continue
+                verified += 1
+                print(f"  {host}: {label} signed the reconstructed precert (chain[{index}])")
+                cases.append(
+                    {
+                        "host": host,
+                        "log": label,
+                        "log_key": base64.b64encode(key_der).decode(),
+                        "issuer_certificate": base64.b64encode(issuer).decode(),
+                        "certificate": base64.b64encode(der).decode(),
+                        "sct": base64.b64encode(item_wire(item)).decode(),
+                        "reconstructed_tbs": base64.b64encode(tbs).decode(),
+                        "issuer_key_hash": issuer_hash.hex(),
+                    }
+                )
+                break
+            else:
+                continue
+            break
+    payload_document = {
+        "provenance": {
+            "fetched_utc": now(),
+            "note": "One entry per certificate that yielded at least one SCT signature this library "
+            "verified against the log's published key. `reconstructed_tbs` is what the tool derived by "
+            "deleting the SCT extension; the test re-derives it from `certificate` and compares.",
+        },
+        "attempts": attempts,
+        "verified": verified,
+        "cases": cases,
+    }
+    (out / "live-sct-signatures.json").write_text(
+        json.dumps(payload_document, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    print(
+        f"wrote {out / 'live-sct-signatures.json'} ({verified}/{attempts} verified, {len(cases)} cases)"
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--out", type=pathlib.Path, default=pathlib.Path("tests/fixtures"))
@@ -568,6 +846,9 @@ def main() -> int:
     )
     parser.add_argument("--skip-tree", action="store_true", help="do not refetch the entry block")
     parser.add_argument("--skip-scts", action="store_true", help="do not refetch live certificates")
+    parser.add_argument(
+        "--skip-sigs", action="store_true", help="do not refetch verifiable SCT signatures"
+    )
     parser.add_argument(
         "--max-alternates",
         type=int,
@@ -585,6 +866,8 @@ def main() -> int:
         tree_sweep(args.out, origin)
     if not args.skip_scts:
         sct_sweep(args.out)
+    if not args.skip_sigs:
+        sct_signatures(args.out)
     return 0
 
 

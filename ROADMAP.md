@@ -19,7 +19,7 @@ drift apart within one release, and the document becomes useless exactly when it
 | Obligation | Spec | Status | Where |
 |---|---|---|---|
 | `sct.parse()` | RFC 6962 section 3.2 (v1, deployed; obsoleted by RFC 9162, whose section 4.8 v2 shape this is not) | `[ok]` | `tests/test_scts.py::test_the_wire_format_offsets_are_what_section_32_declares` |
-| `sct.verify()` | RFC 6962 section 3.2 (v1); RFC 9162 obsoletes the format and v2 is unimplemented | `[ok]` | `tests/test_scts.py::test_a_real_leaf_and_a_signature_from_openssl_verify` |
+| `sct.verify()` | RFC 6962 section 3.2 (v1); RFC 9162 obsoletes the format and v2 is unimplemented | `[ok]` | `tests/test_production_sct_signatures.py::test_a_real_log_signed_this_transcript` |
 | `sth.verify()` | RFC 9162 | `[ok]` | `tests/test_sth.py::test_production_sths_verify_against_their_published_keys` |
 | `merkle.verify_inclusion()` | RFC 9162 | `[ok]` | `tests/test_merkle.py::test_the_published_inclusion_proofs_verify` |
 | `merkle.verify_consistency()` | RFC 9162 | `[ok]` | `tests/test_merkle.py::test_the_published_consistency_proofs_verify` |
@@ -76,11 +76,12 @@ the code existing. Coverage in `pyproject.toml` ratchets in the same commit.
 
 ## 5. Open questions
 
-- **No production SCT signature has been verified end to end.** The fleet evidence covers STHs, tree
-  heads, consistency proofs and SCT *parsing*; the signatures in `live-scts.json` are precert SCTs whose
-  transcript needs the precertificate signing certificate. The recipe that would obtain one is in
-  `docs/interop.md` (a merged log's `extra_data`, minus the SCT extension). Until that is done,
-  `sct.verify` is pinned by OpenSSL over production leaf bytes, not by a log's own signature.
+- **Static-merge logs do not store what the specification implies they do.** For the entries at
+  Argon2026h2's indices 0-9, `leaf_input` and `extra_data` disagree: the logged `TBSCertificate` differs
+  from the stored precert's by 11 bytes and diverges from byte 4 onward, rather than by exactly the one
+  extension the reconstruction removes. Recently submitted entries in the same log reconstruct byte for
+  byte (13 of 13), so this is specific to merged entries. Anyone building an entry-level auditor over
+  merge logs needs this explained; `docs/interop.md` records the measurement and no explanation.
 - **No log serves an inclusion proof**, so inclusion rests on the specification's worked example plus the
   entry-block proofs in `production-tree.json`. Is that a deployment gap or a reading of section 4.5?
   Nobody who asked got a different answer than 404.
@@ -89,6 +90,11 @@ the code existing. Coverage in `pyproject.toml` ratchets in the same commit.
   Writing them first means writing code nobody has confirmed reads the same bytes.
 - **Ed25519** is registered by section 10.2.2 (0x0807) and deliberately unimplemented; a log declaring it
   currently fails at pin-load, loudly. Is loud refusal enough until a log actually uses it?
+- **The precert transcript rule was verified, the poison-vs-SCT question was not generalised.** Six
+  signatures from six logs all reconstruct with "delete the SCT extension from the final certificate", and
+  thirteen logged precert entries all reconstruct with "delete the poison extension from the stored
+  precert". Those are the two shapes deployed logs emit today; whether a log exists that logs a precert
+  whose TBS keeps an SCT list is unknown, and `certledger` should refuse rather than guess if it meets one.
 
 ## 6. Publication checklist
 

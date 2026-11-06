@@ -6,11 +6,14 @@ bytes. What this proves is that the v1 wire format here is the format the real w
 more SCTs across four or five operators, each parsing with no leftover bytes, each naming a log that
 appears in the fleet sweep, and each `log_id` equal to SHA-256 over that log's published key.
 
-What it deliberately does not prove: these signatures are not verified. The embedded extension carries
-**precert** SCTs, whose transcript is `issuer_key_hash | TBSCertificate-without-the-SCT-extension`, and
-a handshake gives you neither - the hash is of the precertificate signing certificate, which the final
-chain is not obliged to contain. So the negative test below is the honest one, and the gap is written
-down rather than left to be discovered by someone trusting a green suite.
+What it deliberately does not prove: these signatures are not verified here. The embedded extension
+carries **precert** SCTs, whose transcript is `issuer_key_hash | TBSCertificate-without-the-SCT-extension`,
+and this fixture stores only the leaf certificate - no chain, and so no issuer key. The negative test
+below is therefore the honest one for *this* fixture, and the positive case lives in
+`tests/test_production_sct_signatures.py`, which carries the issuer certificate alongside each
+signature. Splitting the two is not tidiness: the parsing evidence needs nothing but the certificate,
+while the signature evidence needs the issuer, and a fixture that quietly grew that dependency would make
+the first claim look as though it depended on the second.
 """
 
 from __future__ import annotations

@@ -24,6 +24,8 @@ and Windows, plus the suite under `python -O`.
 rewrites the fixtures under `tests/fixtures/`, so it is run on purpose rather than incidentally - by a
 person deciding the evidence should be refreshed, never by CI. The tests read those fixtures offline,
 which is what keeps a log operator's bad afternoon from turning into a red build here.
+`tools/check_precert_reconstruction.py` is the same kind of tool: also networked, also not a gate, but it
+exits non-zero on a mismatch, so run it after touching anything under `tools/` that walks DER.
 
 ## Invariants
 
