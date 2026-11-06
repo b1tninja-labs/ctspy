@@ -24,10 +24,13 @@ Run: ``python tools/duplication_probe.py``. Networked, read-only, not a test gat
 `tools/fetch_evidence.py`. Requests are serialised and a refusal is counted and reported, because throttling that
 becomes an unrecorded hole is how a crawler ends up reporting its gaps as absence.
 
-Known limitation, stated because it produced a misleading line on the first run: logs are sampled **sequentially**,
-so a busy log's tail is fetched up to a minute after a quiet one's, and the pair's common interval can come out
-empty. Those pairs report `no common interval`, which is an artifact of this tool's own pacing and says nothing
-about the logs. A proper cross-log survey fetches concurrently or seeks each log to one agreed timestamp.
+Two limits worth stating before reading a number off this tool. Logs are sampled **concurrently** (four at a
+time), because sequential sampling made each busy log's tail land up to a minute after a quiet one's, emptied the
+common interval for most pairs, and turned the matrix into blanks - an artifact of the tool's own pacing, not a
+fact about the fleet. Concurrency is also what earns a `429`, and TrustAsia is the usual author, so refusals are
+counted per log and printed rather than quietly retried into nothing. And the windows that do survive are seconds
+wide: a shared entry between two logs is strong evidence of fan-out, an absent one is weak evidence of its
+opposite, which is why every pair prints its sample sizes next to its ratio.
 """
 
 from __future__ import annotations
@@ -41,6 +44,7 @@ import sys
 import time
 import urllib.error
 from collections import Counter, defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
@@ -57,6 +61,9 @@ MIN_PAIR_SAMPLE = (
 )
 DELAY = 0.15
 MAX_PROBE = 512  # largest page to ask for; operators are under no obligation to grant it
+MAX_THROTTLE = (
+    3  # refusals tolerated before the log is left alone; a hole we record, not one we hide
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,6 +114,14 @@ def tail(origin: str, count: int, stats: Counter) -> tuple[list[Leaf], int, int]
             stats["http_errors"] += 1
             if exc.code == 429:
                 stats["throttled_429"] += 1
+                if stats["throttled_429"] > MAX_THROTTLE:
+                    # A log that keeps refusing has answered: "not at this rate". Grinding against it is how a
+                    # crawler gets the endpoint withdrawn for everyone, and the refusal is itself the finding.
+                    print(
+                        f"  {origin}: {stats['throttled_429']} refusals, leaving this log alone "
+                        f"(recorded as a hole, not as absence)"
+                    )
+                    break
                 pause = float(exc.headers.get("Retry-After") or 5.0)
                 print(f"  429 from {origin}; sleeping {pause:.0f}s (recorded, not skipped)")
                 time.sleep(min(pause, 30.0))
@@ -221,11 +236,21 @@ def main() -> int:
 
     logs = select(args.logs)
     print("sampling: " + ", ".join(f"{x['operator']}/{x['description']}" for x in logs))
-    samples: dict[str, list[Leaf]] = {}
-    rows: list[dict] = []
-    for log in logs:
+
+    def fetch(log: dict) -> tuple[dict, list[Leaf], int, int, Counter]:
         stats: Counter = Counter()
         leaves, served, requests = tail(log["url"], args.entries, stats)
+        return log, leaves, served, requests, stats
+
+    # Concurrent on purpose. Sequential sampling made each busy log's tail land up to a minute after a quiet
+    # one's, which emptied the common interval for most pairs and turned the matrix into blanks - an artifact of
+    # this tool's own pacing, not a fact about the fleet.
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        fetched = list(pool.map(fetch, logs))
+
+    samples: dict[str, list[Leaf]] = {}
+    rows: list[dict] = []
+    for log, leaves, served, requests, stats in fetched:
         if not leaves:
             print(f"  NO DATA  {log['operator']}: {log['description']}")
             continue
