@@ -1,0 +1,184 @@
+{
+  "fleet": {
+    "distinct_entries": 2182,
+    "excluded": [],
+    "factor": 1.1751,
+    "interval_seconds": 13.222,
+    "leaves": 2564,
+    "logs": {
+      "DigiCert Sphinx2026h1": 70,
+      "DigiCert Wyvern2026h1": 68,
+      "DigiCert Wyvern2026h2": 1480,
+      "Google Argon2026h2": 946
+    }
+  },
+  "logs": [
+    {
+      "description": "Google Argon2026h2",
+      "distinct_entries": 1500,
+      "distinct_issuer_keys": 31,
+      "duplicate_leaves": 0,
+      "entries_per_second": 144.27,
+      "fetched": 1500,
+      "http_errors": 0,
+      "interval_seconds": 10.397,
+      "kinds": {
+        "precert": 597,
+        "x509": 903
+      },
+      "operator": "Google",
+      "origin": "https://ct.googleapis.com/logs/us1/argon2026h2",
+      "page_served_max": 32,
+      "requests": 90,
+      "state": "usable",
+      "throttled_429": 0
+    },
+    {
+      "description": "DigiCert Wyvern2026h1",
+      "distinct_entries": 353,
+      "distinct_issuer_keys": 29,
+      "duplicate_leaves": 0,
+      "entries_per_second": 5.91,
+      "fetched": 353,
+      "http_errors": 0,
+      "interval_seconds": 59.731,
+      "kinds": {
+        "precert": 246,
+        "x509": 107
+      },
+      "operator": "DigiCert",
+      "origin": "https://wyvern.ct.digicert.com/2026h1",
+      "page_served_max": 64,
+      "requests": 38,
+      "state": "rejected",
+      "throttled_429": 0
+    },
+    {
+      "description": "DigiCert Wyvern2026h2",
+      "distinct_entries": 1500,
+      "distinct_issuer_keys": 31,
+      "duplicate_leaves": 0,
+      "entries_per_second": 112.62,
+      "fetched": 1500,
+      "http_errors": 0,
+      "interval_seconds": 13.319,
+      "kinds": {
+        "precert": 725,
+        "x509": 775
+      },
+      "operator": "DigiCert",
+      "origin": "https://wyvern.ct.digicert.com/2026h2",
+      "page_served_max": 64,
+      "requests": 173,
+      "state": "usable",
+      "throttled_429": 0
+    },
+    {
+      "description": "DigiCert Sphinx2026h1",
+      "distinct_entries": 347,
+      "distinct_issuer_keys": 28,
+      "duplicate_leaves": 0,
+      "entries_per_second": 5.81,
+      "fetched": 347,
+      "http_errors": 0,
+      "interval_seconds": 59.723,
+      "kinds": {
+        "precert": 240,
+        "x509": 107
+      },
+      "operator": "DigiCert",
+      "origin": "https://sphinx.ct.digicert.com/2026h1",
+      "page_served_max": 64,
+      "requests": 37,
+      "state": "rejected",
+      "throttled_429": 0
+    }
+  ],
+  "min_pair_sample": 150,
+  "pairs": [
+    {
+      "interval": [
+        1780315205.215,
+        1780315215.612
+      ],
+      "kinds": {},
+      "left": 1096,
+      "left_log": "Google Argon2026h2",
+      "right": 69,
+      "right_log": "DigiCert Wyvern2026h1",
+      "shared": 0,
+      "verdict": "sample too small"
+    },
+    {
+      "interval": [
+        1780315205.215,
+        1780315213.319
+      ],
+      "kinds": {
+        "precert": 110,
+        "x509": 157
+      },
+      "left": 784,
+      "left_log": "Google Argon2026h2",
+      "right": 1074,
+      "right_log": "DigiCert Wyvern2026h2",
+      "shared": 267,
+      "verdict": "overlap"
+    },
+    {
+      "interval": [
+        1780315205.215,
+        1780315215.612
+      ],
+      "kinds": {},
+      "left": 1096,
+      "left_log": "Google Argon2026h2",
+      "right": 72,
+      "right_log": "DigiCert Sphinx2026h1",
+      "shared": 0,
+      "verdict": "sample too small"
+    },
+    {
+      "interval": [
+        1780315200.076,
+        1780315213.319
+      ],
+      "kinds": {},
+      "left": 69,
+      "left_log": "DigiCert Wyvern2026h1",
+      "right": 1484,
+      "right_log": "DigiCert Wyvern2026h2",
+      "shared": 0,
+      "verdict": "sample too small"
+    },
+    {
+      "interval": [
+        1780315200.097,
+        1780315259.807
+      ],
+      "kinds": {
+        "precert": 215,
+        "x509": 106
+      },
+      "left": 352,
+      "left_log": "DigiCert Wyvern2026h1",
+      "right": 346,
+      "right_log": "DigiCert Sphinx2026h1",
+      "shared": 321,
+      "verdict": "overlap"
+    },
+    {
+      "interval": [
+        1780315200.097,
+        1780315213.319
+      ],
+      "kinds": {},
+      "left": 1480,
+      "left_log": "DigiCert Wyvern2026h2",
+      "right": 70,
+      "right_log": "DigiCert Sphinx2026h1",
+      "shared": 0,
+      "verdict": "sample too small"
+    }
+  ]
+}

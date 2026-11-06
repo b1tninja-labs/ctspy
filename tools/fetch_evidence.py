@@ -37,6 +37,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import Counter
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
@@ -119,6 +120,69 @@ def usable_logs() -> list[dict]:
     print(
         f"log list v{document.get('version')}: {len(logs)} usable or read-only logs, "
         f"timestamp {document.get('log_list_timestamp')}"
+    )
+    return logs
+
+
+ALL_LOGS_LIST = "https://www.gstatic.com/ct/log_list/v3/all_logs_list.json"
+
+
+def list_logs(
+    source: str = ALL_LOGS_LIST,
+    *,
+    states: set[str] | None = None,
+    include_test: bool = False,
+) -> list[dict]:
+    """Every log a list describes, with its declared state — including those Chrome will not enforce with.
+
+    `usable_logs()` is the right reader for an interoperability sweep: a key withdrawn for cause is poor evidence
+    about today's wire format, exactly as its docstring says. It is the wrong reader for a *coverage* claim,
+    because `log_list.json` carries only the logs Chrome enforces with (26 at v96.2) while
+    `all_logs_list.json` carries 45 — the extra 19 holding 13.6 billion leaves, 6.5 billion of them
+    publicly-trusted issuance in the `rejected` 2026h1 generation, still serving their trees today
+    (`certledger/BROWSER-POLICY.md` §2). Which document was read is part of the result, so `source` also accepts a
+    journaled snapshot path and a claim can be reproduced against the exact bytes it was made from.
+
+    Logs the list marks `test` are dropped unless `include_test` says otherwise: they hold billions of leaves that
+    were never publicly trusted, and folding them in silently manufactures "issued by a trusted CA" claims that
+    are false by construction. A log with no `state` field at all — Google's Daedalus and Submariner, and the
+    never-applied entries — is reported as `none` rather than skipped, because its tree is real issuance even
+    though no browser counts it.
+    """
+    from_disk = pathlib.Path(source).is_file()
+    document = (
+        json.loads(pathlib.Path(source).read_text(encoding="utf-8"))
+        if from_disk
+        else get_json(source)
+    )
+    logs = []
+    for operator in document.get("operators", []):
+        for log in operator.get("logs", []):
+            declared = log.get("state") or log.get("status")
+            state = next(iter(declared), None) if isinstance(declared, dict) else declared
+            is_test = log.get("log_type") == "test"
+            if is_test and not include_test:
+                continue
+            if states and (state or "none") not in states:
+                continue
+            url = log.get("url") or (log.get("urls") or [None])[0]
+            logs.append(
+                {
+                    "operator": operator.get("name", "?"),
+                    "description": log.get("description", "?"),
+                    "key": log.get("key", ""),
+                    "log_id": log.get("log_id", ""),
+                    "url": (url or "").rstrip("/"),
+                    "state": state or "none",
+                    "test": is_test,
+                    "seal": declared.get("final_tree_head") if isinstance(declared, dict) else None,
+                    "mmd": log.get("mmd"),
+                }
+            )
+    print(
+        f"{source.rsplit('/', 1)[-1] if not from_disk else pathlib.Path(source).name}"
+        f" v{document.get('version')}: {len(logs)} logs, states "
+        f"{dict(Counter(x['state'] for x in logs))}"
     )
     return logs
 
