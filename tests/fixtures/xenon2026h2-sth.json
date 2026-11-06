@@ -1,0 +1,25 @@
+{
+  "provenance": {
+    "fetched_utc": "2026-11-05T20:40:00Z",
+    "url": "https://ct.googleapis.com/logs/eu1/xenon2026h2/ct/v1/get-sth",
+    "log_description": "Google Xenon2026h2",
+    "log_list": "https://www.gstatic.com/ct/log_list/v3/log_list.json version 96.2, log_list_timestamp 2026-11-05T13:36:08Z",
+    "note": "Body recorded verbatim from the response. The key is the log's published 'key' field (a base64 DER SubjectPublicKeyInfo) and its log_id is verified to equal SHA-256 over that DER."
+  },
+  "key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE5Xd4lXEos5XJpcx6TOgyA5Z7/C4duaTbQ6C9aXL5Rbqaw+mW1XDnDX7JlRUninIwZYZDU9wRRBhJmCVopzwFvw==",
+  "log_id": "2AlVO5RPev/IFhlvlE+Fq7D4/F6HVSYPFdEucrtFSxQ=",
+  "responses": [
+    {
+      "tree_size": 3024195456,
+      "timestamp": 1793970166342,
+      "sha256_root_hash": "f3NbYxNJZb2TI/FykqNm71aho2/6fdpl5/L/k68Ozig=",
+      "tree_head_signature": "BAMARzBFAiEAhQDC8D5LYjs1rNGVyVEfiAx4i1ZEpk5QQalh+U0wO5gCICa2aT4UGbCvY5RrfhOoDcfXAOHK9vCjV1GRPQBUrF7A"
+    },
+    {
+      "tree_size": 3024221414,
+      "timestamp": 1793971246217,
+      "sha256_root_hash": "yDNa47SdUhMHW4wRwcP/b5nUjQVrK6KBXgzqCVc9KAg=",
+      "tree_head_signature": "BAMARzBFAiEAueHgKc/Gtfr4J/V/y+RSxYm/mJq2V1j/GIgdkc3SYdoCIHJrpEfV57VOS5LHghTviEmMwQcnknF59ZJcrovIbGqG"
+    }
+  ]
+}

@@ -18,15 +18,19 @@ drift apart within one release, and the document becomes useless exactly when it
 
 | Obligation | Spec | Status | Where |
 |---|---|---|---|
-| `sct.parse()` | RFC 9162 | `[ ]` | `tests/test_obligations.py::parse` |
-| `sct.verify()` | RFC 9162 | `[ ]` | `tests/test_obligations.py::verify` |
-| `sth.verify()` | RFC 9162 | `[ ]` | `tests/test_obligations.py::verify` |
-| `merkle.verify_inclusion()` | RFC 9162 | `[ ]` | `tests/test_obligations.py::verify_inclusion` |
-| `merkle.verify_consistency()` | RFC 9162 | `[ ]` | `tests/test_obligations.py::verify_consistency` |
-| `tiles.fetch_tile()` | RFC 9162 | `[ ]` | `tests/test_obligations.py::fetch_tile` |
-| `client.add_chain()` | RFC 9162 | `[ ]` | `tests/test_obligations.py::add_chain` |
-| `monitor.watch()` | RFC 9162 | `[ ]` | `tests/test_obligations.py::watch` |
-| `policy.acceptable()` | design | `[ ]` | `tests/test_obligations.py::acceptable` |
+| `sct.parse()` | RFC 9162 | `[ ]` | not implemented; the stub is loud, `test_public_api.py::test_stubs_are_loud` covers it |
+| `sct.verify()` | RFC 9162 | `[ ]` | not implemented; the transcript shape is settled for STHs, not yet for entries |
+| `sth.verify()` | RFC 9162 | `[ok]` | `tests/test_sth.py::test_production_sths_verify_against_their_published_keys` |
+| `merkle.verify_inclusion()` | RFC 9162 | `[ok]` | `tests/test_merkle.py::test_the_published_inclusion_proofs_verify` |
+| `merkle.verify_consistency()` | RFC 9162 | `[ok]` | `tests/test_merkle.py::test_the_published_consistency_proofs_verify` |
+| `tiles.fetch_tile()` | RFC 9162 | `[ ]` | milestone M3 |
+| `client.add_chain()` | RFC 9162 | `[ ]` | milestone M4 |
+| `monitor.watch()` | RFC 9162 | `[ ]` | milestone M5 |
+| `policy.acceptable()` | design | `[ ]` | design undecided |
+
+The `Where` column used to name `tests/test_obligations.py`, a file this repository never had. That
+was the row lying about being checkable, which is worse than an honest gap.
+
 
 ## 2. Milestones
 
@@ -43,7 +47,14 @@ the code existing. Coverage in `pyproject.toml` ratchets in the same commit.
 ## 3. Errata watch
 
 - RFC 9162 is Experimental with 1 erratum on file and none verified: expect variation between implementations and pin tests to real logs.
+- **Erratum 8670** (editorial, held for document update) touches the shift loops of sections 2.1.3.2
+  step 4.b.ii and 2.1.4.2 step 6.b.iii: the printed text ends the loop on "until either LSB(fn) is
+  set or fn is 0", and the corrector deletes the second clause because `fn == 0` is unreachable
+  (step 4.a fails on `sn == 0`, and `fn <= sn` is invariant). Both readings compute the same thing
+  provided the implementation does not *accept* `fn == 0` as an exit; `ctspy/merkle.py` shifts until
+  the bit is set and `test_the_rightmost_leaf_consumes_exactly_two_path_nodes` pins the case.
 - RFC 9162 obsoletes RFC 6962; log artifacts from 2013 deployments still follow 6962 shapes, so the reader must accept both.
+
 
 ## 4. Deliberate non-goals
 

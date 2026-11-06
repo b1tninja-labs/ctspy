@@ -42,6 +42,11 @@ dev = [
   "hypothesis",
   "ruff",
   "mypy",
+  # The tests use OpenSSL as an oracle for the pure-Python verifier in ctspy/ecdsa.py: signatures
+  # it makes must verify and one-bit changes must not. That is a dev-only use - the package itself
+  # keeps `dependencies = []` - but it has to be declared, or a fresh checkout cannot run its own
+  # suite and the cross-check silently stops being a cross-check.
+  "cryptography",
   # tools/check_dist.py cannot assert a wheel contains what the docs promise without
   # first being able to build one, so the build dependency belongs in the dev group.
   "build",
@@ -82,7 +87,7 @@ source = ["ctspy"]
 # coverage for the line that raises. Raise this in the commit that implements a
 # milestone, never in a commit that only adds tests, so the number keeps meaning
 # "this behaviour is exercised" rather than "this file was imported".
-fail_under = 45
+fail_under = 80
 show_missing = true
 exclude_lines = [
   "if __name__ == .__main__.:",
