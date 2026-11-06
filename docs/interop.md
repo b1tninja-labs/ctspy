@@ -191,7 +191,89 @@ for a verifier depends on which parser was used, so the answer belongs in the fe
 rather than in a warning nobody reads.
 
 
+## `extra_data` is two structures, not one (2026-11-05)
+
+RFC 6962 section 3.1 defines `X509ChainEntry` and `PrecertChainEntry` side by side, each a certificate
+followed by a chain of certificates. A reader written from that section alone treats them alike, and that
+reader is silently wrong for every x509 entry. Section 4.6 is the one that says what `get-entries` puts in
+`extra_data`:
+
+> extra_data: The base64-encoded unsigned data pertaining to the log entry. In the case of an X509ChainEntry,
+> this is the "certificate_chain". In the case of a PrecertChainEntry, this is the whole "PrecertChainEntry".
+
+The asymmetry is not an oversight. An x509 entry's `signed_entry` **is** the DER certificate
+([§3.4](https://www.rfc-editor.org/rfc/rfc6962#section-3.4)), so the log already commits to it in the tree
+and `extra_data` carries only the issuer chain; a precert entry's `signed_entry` is a `PreCert` - an issuer
+key hash plus a TBSCertificate with the poison extension removed - so the submitted precertificate exists
+nowhere else. Two logs were checked for the consequence and both behave this way: the leaf certificate never
+appears in an x509 entry's `extra_data`, while the precertificate always appears in a precert entry's.
+
+Measured over 736 entries from 23 operational logs, all read with no refusals: 452 precert entries, 284 x509.
+The chain histogram is the reason the naive reader is dangerous rather than merely wrong:
+
+| entry type | 1 chain cert | 2 | 3 or more |
+|---|---|---|---|
+| precert | 32 | 253 | 167 |
+| x509 | 35 | 249 | 0 |
+
+Reading an x509 blob as "certificate then vector" consumes the vector's total length as a certificate length,
+lands exactly on the end of the blob, and reports **an empty chain and no error** - on 284 of 284 x509
+entries, which is the only place the issuer intermediates appear. `parse_extra_data` takes the
+`MerkleTreeLeaf` as an argument rather than an entry-type integer, so the caller cannot ask for a layout
+without saying which entry the bytes belong to, and it returns `StoredChain` with `authenticated` set: for an
+x509 entry the certificate is the leaf's, which the tree hashes, while the chain beside it is unsigned data
+that section 4.6 explicitly declines to sign. A monitor that hashes the `extra_data` copy of an x509
+certificate and calls it verified is claiming an integrity property the protocol does not have.
+
+Two wrong turns on the way here are worth recording, because both produced confident answers. The first
+survey bucketed the x509 blobs as "wrapped" and concluded that framing differed by implementation - Google
+bare, Sectigo wrapped, DigiCert neither - which was an artifact of testing byte arithmetic without testing
+DER structure. The corrected model that followed ("an extra length layer, then certificate then vector")
+passed on all 284 x509 entries, and was still wrong: it happens to be exactly right when the chain holds one
+certificate, which 249 of those 284 entries do not contradict because the shape it expects *is* two
+certificates. The reading was only falsified by going to the section that defines the field.
+
+## A precert entry's TBSCertificate is the precertificate's, minus the poison, minus two more things
+
+An earlier note here recorded that at Argon2026h2 indices 0-9 the logged `TBSCertificate` differed from the
+stored precert's by 11 bytes and diverged from byte 4 onward, while 13 recently submitted entries in the same
+log reconstructed byte for byte, and it called this specific to static-merge logs. **Both halves of that
+claim were wrong.** Three of those ten entries are x509 entries, whose `extra_data` contains no
+precertificate at all, so part of the "divergence" was a real TBSCertificate compared against an issuer's.
+And re-measured over 494 precerts in five logs, the remainder fails in *live* logs at the same rate as in
+merged ones: 321 reconstruct and 173 do not, in Argon2027h1 as much as in Argon2026h2.
+
+The rest is the specification, in RFC 6962 [§3.2¶9](https://www.rfc-editor.org/rfc/rfc6962#section-3.2),
+which defines the logged `tbs_certificate` as the precertificate's TBS "without the signature and the poison
+extension" and then adds, for a precertificate not signed by the CA that will issue the final certificate -
+that is, signed by a Precertificate Signing Certificate (§3.1¶2):
+
+> the TBSCertificate also has its issuer changed to that of the CA that will issue the final certificate ...
+> the TBSCertificate also has its Authority Key Identifier changed to match the final issuer.
+
+The prediction that follows is checkable and checked: for a precertificate signed by a PSC, the leaf's
+`issuer_key_hash` is the hash of the *issuing CA's* SPKI, so it must match `chain[1]` and not `chain[0]`.
+Cross-tabulated over all 494 precerts, the two classifications are perfectly diagonal with no exceptions:
+
+| reconstruction | `issuer_key_hash` matches | precerts |
+|---|---|---|
+| poison removal alone | `chain[0]` | 321 |
+| issuer and AKI also rewritten | `chain[1]` | 173 |
+
+The rewritten ones carry a `chain[0]` whose subject says it, for instance
+`O=Google Certificate Transparency (Precert Signing)`. The consequence for anything that builds an issuer
+graph is immediate: **attribute a precert entry to `issuer_key_hash`, never to `chain[0]`.** A third of
+`chain[0]` values are CT-only signing certificates that are not CAs in any sense a browser would recognise,
+and a graph built from them would report phantom issuers holding a third of the world's issuance - and since
+`extra_data` is unsigned while `issuer_key_hash` sits inside the hashed leaf, the authenticated field is also
+the one that is merely correct.
+
+Reproduce with `sdk-forge/probe_psc_rewriting.py` and `sdk-forge/probe_leaf_repetition.py`; the survey is
+regenerated by `python tools/fetch_evidence.py --only-layout` into
+`tests/fixtures/extra-data-layout.json` and asserted by `tests/test_production_extra_data.py`.
+
 ## A property of the algorithm, found by accident and pinned on purpose
+
 
 With `first == 1`, section 2.1.4.2's loop leaves `fn` at 0, so `fr` never moves and `second` ends up
 constrained only by how far it shifts toward 0. A proof for the live tree also folds when `second` is

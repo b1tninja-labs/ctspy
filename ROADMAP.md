@@ -23,6 +23,7 @@ drift apart within one release, and the document becomes useless exactly when it
 | `sth.verify()` | RFC 9162 | `[ok]` | `tests/test_sth.py::test_production_sths_verify_against_their_published_keys` |
 | `merkle.verify_inclusion()` | RFC 9162 | `[ok]` | `tests/test_merkle.py::test_the_published_inclusion_proofs_verify` |
 | `merkle.verify_consistency()` | RFC 9162 | `[ok]` | `tests/test_merkle.py::test_the_published_consistency_proofs_verify` |
+| `entry.parse_extra_data()` | RFC 6962 sections 3.1, 3.2, 4.6 (v1, deployed) | `[ok]` | `tests/test_production_extra_data.py::test_rereading_an_entry_rebuilds_the_exact_octets_the_log_sent` |
 | `tiles.fetch_tile()` | RFC 9162 | `[ ]` | milestone M3 |
 | `client.add_chain()` | RFC 9162 | `[ ]` | milestone M4 |
 | `monitor.watch()` | RFC 9162 | `[ ]` | milestone M5 |
@@ -76,12 +77,18 @@ the code existing. Coverage in `pyproject.toml` ratchets in the same commit.
 
 ## 5. Open questions
 
-- **Static-merge logs do not store what the specification implies they do.** For the entries at
-  Argon2026h2's indices 0-9, `leaf_input` and `extra_data` disagree: the logged `TBSCertificate` differs
-  from the stored precert's by 11 bytes and diverges from byte 4 onward, rather than by exactly the one
-  extension the reconstruction removes. Recently submitted entries in the same log reconstruct byte for
-  byte (13 of 13), so this is specific to merged entries. Anyone building an entry-level auditor over
-  merge logs needs this explained; `docs/interop.md` records the measurement and no explanation.
+- **Static-merge logs appeared to store something the specification does not describe.** Resolved, and the
+  question was wrong in both of its halves. Three of the ten entries at Argon2026h2 indices 0-9 are x509
+  entries, whose
+  `extra_data` contains no precertificate at all (section 4.6), so part of the "11-byte divergence" was a
+  real `TBSCertificate` compared against an issuer's. The precerts that fail to reconstruct are not a merge
+  artefact either: they fail in live logs at the same rate, because they were signed by a Precertificate
+  Signing Certificate, and RFC 6962 section 3.2 paragraph 9 rewrites the issuer and the Authority Key
+  Identifier of the logged `TBSCertificate` in exactly that case. Cross-tabulated over 494 precerts in five
+  logs, poison-only reconstruction and `issuer_key_hash == SHA256(chain[0].SPKI)` are perfectly diagonal -
+  321 entries both - and the other 173 match `chain[1]`. `docs/interop.md` carries the measurement and the
+  consequence: an issuer graph must key on `issuer_key_hash`, because a third of `chain[0]` values are
+  CT-only signing certificates that are not CAs.
 - **No log serves an inclusion proof**, so inclusion rests on the specification's worked example plus the
   entry-block proofs in `production-tree.json`. Is that a deployment gap or a reading of section 4.5?
   Nobody who asked got a different answer than 404.

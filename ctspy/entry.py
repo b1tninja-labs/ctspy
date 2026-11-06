@@ -35,10 +35,11 @@ __all__ = [
     "V1_X509_ENTRY",
     "MerkleTreeLeaf",
     "PrecertEntry",
+    "StoredChain",
     "TimestampedEntry",
     "X509Entry",
+    "parse_extra_data",
 ]
-
 V1_VERSION = 0x00
 V1_LEAF_TYPE = 0x00  # MerkleLeafType.timestamped_entry, RFC 6962 section 3.4
 V1_SIGNATURE_TYPE = 0x00  # SignatureType.certificate_timestamp, RFC 6962 section 3.2
@@ -194,3 +195,129 @@ class MerkleTreeLeaf:
         entry = TimestampedEntry.parse(reader)
         reader.finish()
         return cls(raw=data, version=version, leaf_type=leaf_type, entry=entry)
+
+
+@dataclass(frozen=True, slots=True)
+class StoredChain:
+    """The certificate an entry is about, and the chain the submitter provided with it.
+
+    `authenticated` says which of those two halves the tree commits to. It is a field rather than a comment
+    because the two halves are not the same kind of evidence: RFC 6962 section 4.6 states plainly that the
+    retrieved `extra_data` "is not signed", and for an x509 entry the certificate is carried in `leaf_input`
+    - which the Merkle tree hashes - while the chain is not. A store that treats the chain as though a log
+    had committed to it is claiming an integrity property the protocol does not provide.
+    """
+
+    certificate: bytes
+    chain: tuple[bytes, ...]
+    authenticated: bool
+
+    def __post_init__(self) -> None:
+        if not self.certificate:
+            raise TranscriptError(
+                "an entry needs the certificate it is about; extra_data gave none"
+            )
+
+
+def _der_span(data: bytes, at: int) -> int | None:
+    """How many octets the DER element at `at` occupies, or None if none starts there.
+
+    Only header structure is needed here and ctspy takes no ASN.1 dependency, so the tag and length octets
+    are read directly. The check is not decoration: a 3-byte number from a mis-sliced blob is usually a
+    plausible length, and the only thing that separates a real certificate from a coincidental number is
+    whether a DER document actually begins where the length says it does.
+    """
+    if at + 1 >= len(data) or data[at] != 0x30:
+        return None
+    first = data[at + 1]
+    if first < 0x80:
+        span = 2 + first
+    else:
+        count = first & 0x7F
+        if count == 0 or count > 4 or at + 2 + count > len(data):
+            return None
+        span = 2 + count + int.from_bytes(data[at + 2 : at + 2 + count], "big")
+    return span if at + span <= len(data) else None
+
+
+def _certificate_at(data: bytes, at: int, declared: int) -> bool:
+    """Does a DER certificate start at `at` and occupy exactly the `declared` octets?"""
+    return declared > 0 and _der_span(data, at) == declared
+
+
+def _read_cert(data: bytes, at: int) -> tuple[bytes, int] | None:
+    """One `ASN.1Cert` (an `opaque<1..2^24-1>`) at `at`, and where the next one would start."""
+    if len(data) < at + 3:
+        return None
+    declared = int.from_bytes(data[at : at + 3], "big")
+    if not _certificate_at(data, at + 3, declared):
+        return None
+    return data[at + 3 : at + 3 + declared], at + 3 + declared
+
+
+def _read_vector(data: bytes, at: int) -> tuple[tuple[bytes, ...], int] | None:
+    """An `ASN.1Cert<0..2^24-1>` at `at`: a 3-byte total, then that many octets of certificates."""
+    if len(data) < at + 3:
+        return None
+    total = int.from_bytes(data[at : at + 3], "big")
+    if at + 3 + total > len(data):
+        return None
+    certificates: list[bytes] = []
+    cursor = at + 3
+    while cursor < at + 3 + total:
+        read = _read_cert(data, cursor)
+        if read is None:
+            return None
+        certificates.append(read[0])
+        cursor = read[1]
+    return tuple(certificates), at + 3 + total
+
+
+def parse_extra_data(leaf: MerkleTreeLeaf, data: bytes) -> StoredChain:
+    """Read what a log stored alongside an entry, using the layout that entry type actually has.
+
+    The two arms are **not** the same shape, and reading them as if they were is the most expensive mistake a
+    monitor can make with this data. RFC 6962 section 3.1 defines both `X509ChainEntry` and
+    `PrecertChainEntry` as a certificate followed by a chain, which invites one reader; section 4.6 then says
+    what `get-entries` actually puts in `extra_data`: "In the case of an X509ChainEntry, this is the
+    `certificate_chain`. In the case of a PrecertChainEntry, this is the whole `PrecertChainEntry`."
+
+    The asymmetry is deliberate. An x509 entry's `signed_entry` in the leaf *is* the DER certificate (section
+    3.4), so repeating it in `extra_data` would be redundant. A precert entry's `signed_entry` is a `PreCert`
+    - an issuer key hash and a TBSCertificate with the poison extension removed - so the certificate the CA
+    submitted exists nowhere but `extra_data`. The x509 arm is therefore a single `ASN.1Cert<0..2^24-1>`
+    vector, which to a reader written from section 3.1 looks like a mysterious extra length layer, and the
+    certificate it hands back comes from the leaf: the half the tree authenticates.
+
+    A log that serves fewer chain certificates than the submission contained is invisible to MTH auditing,
+    since `extra_data` is unsigned, so the chain is returned as a count the caller can act on rather than
+    assumed complete.
+    """
+    signed = leaf.entry.entry
+    if isinstance(signed, X509Entry):
+        read = _read_vector(data, 0)
+        if read is None or read[1] != len(data):
+            raise TranscriptError(
+                f"extra_data of {len(data)} bytes for an x509 entry is not an ASN.1Cert vector; refusing to "
+                "guess, because the alternative is storing a chain no log committed to"
+            )
+        return StoredChain(certificate=signed.certificate, chain=read[0], authenticated=True)
+    if isinstance(signed, PrecertEntry):
+        submitted = _read_cert(data, 0)
+        if submitted is None:
+            raise TranscriptError(
+                f"extra_data of {len(data)} bytes for a precert entry does not begin with the "
+                "precertificate that was submitted"
+            )
+        if len(data) == submitted[1]:
+            # `precertificate_chain` is <0..2^24-1>, so an absent chain is legal: the log stored only the
+            # precertificate. Reported rather than repaired - a monitor that cannot reach a root through the
+            # stored bytes has a finding about that log, not a parsing error.
+            return StoredChain(certificate=submitted[0], chain=(), authenticated=False)
+        read = _read_vector(data, submitted[1])
+        if read is None or read[1] != len(data):
+            raise TranscriptError(
+                f"extra_data of {len(data)} bytes for a precert entry has bytes after its certificate vector"
+            )
+        return StoredChain(certificate=submitted[0], chain=read[0], authenticated=False)
+    raise TranscriptError(f"unhandled LogEntryType 0x{signed.entry_type:04x} in parse_extra_data")

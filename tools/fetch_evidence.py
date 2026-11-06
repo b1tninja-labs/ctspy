@@ -39,6 +39,7 @@ import urllib.request
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
+from ctspy import entry as entry_mod
 from ctspy import merkle, sth
 from ctspy.ecdsa import EcdsaKey
 
@@ -467,21 +468,76 @@ SCT_OID_DER = bytes.fromhex("060a2b06010401d679020402")  # 1.3.6.1.4.1.11129.2.4
 POISON_OID_DER = bytes.fromhex("060a2b06010401d679020403")  # 1.3.6.1.4.1.11129.2.4.3
 
 
-def parse_extra_data(extra: bytes) -> tuple[bytes, list[bytes]]:
-    """`ASN.1Cert` then `ASN.1Cert<1..2^24-1>` - the same shape for both v1 entry types.
+def parse_extra_data(leaf, extra: bytes) -> tuple[bytes, list[bytes]]:
+    """Delegate to `ctspy.entry.parse_extra_data`, which reads the layout the entry type actually has."""
+    stored = entry_mod.parse_extra_data(leaf, extra)
+    return stored.certificate, list(stored.chain)
 
-    For an x509 entry the first value is the leaf certificate and the second the chain the submitter
-    provided; for a precert entry it is the precert as submitted and its issuer chain. Note what this
-    does *not* contain: the SCT the log issued. That was in the HTTP response, never in the tree, which
-    is why a log's own signature cannot be recovered from its own entries.
+
+def extra_layout(out: pathlib.Path) -> None:
+    """Survey how `extra_data` is laid out across the fleet, and keep bytes for the interesting cases.
+
+    Counts alone would not settle this. What matters is whether any x509 entry carries **two or more** chain
+    certificates, because that is the case a reader which assumes "one certificate then one vector" gets
+    wrong in silence: it reads the second certificate's length as a vector header and either fails or, worse,
+    succeeds while dropping the tail. So the chain-length histogram is captured next to the samples, and an
+    x509 entry with a long chain is kept as bytes even if it is the only one.
     """
-    subject, cursor = opaque3(extra, 0)
-    total, _ = opaque3(extra, cursor)
-    chain, inner = [], 0
-    while inner < len(total):
-        cert, inner = opaque3(total, inner)
-        chain.append(cert)
-    return subject, chain
+    parsed: dict[str, int] = {}
+    chains: dict[str, int] = {}
+    samples: list[dict] = []
+    long_chain: list[dict] = []
+    logs = 0
+    for record in usable_logs():
+        url = record["url"]
+        try:
+            body = get_json(f"{url}/ct/v1/get-entries?start=0&end=31")
+        except Exception:  # noqa: S112 - a log that is down is a gap in the survey, not a crash
+            continue
+        logs += 1
+        kept = {"precert": 0, "x509": 0}
+        for index, item in enumerate(body["entries"]):
+            leaf = entry_mod.MerkleTreeLeaf.parse(base64.b64decode(item["leaf_input"]))
+            signed = leaf.entry.entry
+            kind = "precert" if isinstance(signed, entry_mod.PrecertEntry) else "x509"
+            extra = base64.b64decode(item["extra_data"])
+            try:
+                stored = entry_mod.parse_extra_data(leaf, extra)
+            except Exception:
+                parsed[f"{kind}:refused"] = parsed.get(f"{kind}:refused", 0) + 1
+                continue
+            parsed[f"{kind}:read"] = parsed.get(f"{kind}:read", 0) + 1
+            key = f"{kind}:{min(len(stored.chain), 3)}"
+            chains[key] = chains.get(key, 0) + 1
+            record = {
+                "log": url,
+                "index": index,
+                "kind": kind,
+                "authenticated": stored.authenticated,
+                "chain_count": len(stored.chain),
+                "leaf_input": item["leaf_input"],
+                "extra_data": item["extra_data"],
+            }
+            if len(stored.chain) >= 2 and len(long_chain) < 4:
+                long_chain.append(record)
+            elif kept[kind] < 2 and len(samples) < 30:
+                kept[kind] += 1
+                samples.append(record)
+    if not logs:
+        # An empty survey written to a fixture would read later as "the fleet is consistent", which is
+        # exactly the wrong conclusion to draw from having reached nobody.
+        raise SystemExit("extra_data layout: no log answered; refusing to write an empty survey")
+    payload = {
+        "captured": now(),
+        "logs": logs,
+        "parsed": dict(sorted(parsed.items())),
+        "chain_lengths": dict(sorted(chains.items())),
+        "entries": samples + long_chain,
+    }
+    (out / "extra-data-layout.json").write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    print(f"extra_data layout: {logs} logs -> {parsed} chains {chains}")
 
 
 def opaque3(data: bytes, offset: int) -> tuple[bytes, int]:
@@ -850,6 +906,14 @@ def main() -> int:
         "--skip-sigs", action="store_true", help="do not refetch verifiable SCT signatures"
     )
     parser.add_argument(
+        "--skip-layout", action="store_true", help="do not refetch the extra_data layout survey"
+    )
+    parser.add_argument(
+        "--only-layout",
+        action="store_true",
+        help="capture only the extra_data layout survey and stop",
+    )
+    parser.add_argument(
         "--max-alternates",
         type=int,
         default=8,
@@ -857,6 +921,9 @@ def main() -> int:
     )
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
+    if args.only_layout:
+        extra_layout(args.out)
+        return 0
     urls = sweep(args.out) if not args.skip_sweep else cached_urls(args.out)
     origin = args.origin.rstrip("/")
     alternates = [url for url in urls if url != origin][: args.max_alternates]
@@ -868,6 +935,8 @@ def main() -> int:
         sct_sweep(args.out)
     if not args.skip_sigs:
         sct_signatures(args.out)
+    if not args.skip_layout:
+        extra_layout(args.out)
     return 0
 
 
