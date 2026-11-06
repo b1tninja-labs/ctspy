@@ -30,17 +30,64 @@ The Xenon2026h2 artifact verifies over `version || tree_hash || timestamp || tre
 and fails over the same without the first two bytes. `test_the_48_byte_misreading_is_refused` pins
 both outcomes, so the question cannot be re-opened by a future reader of RFC 5246.
 
-## Not yet cross-checked, and what stopped it
+## Verified against the whole fleet (2026-11-05, second sweep)
 
-- **Inclusion and consistency proofs.** These are pinned to the worked example in RFC 9162 section
-  2.1.5 - the authors' own stated proofs for a 7-leaf tree - which is an expectation written by the
-  specification rather than by this code. A production proof would be stronger: Google's
-  `get-inclusion-proof-by-hash` returned 404 through the sandbox's fetch path on 2026-11-05, so it is
-  recorded here as pending rather than approximated.
-- **A second log implementation.** Both fixtures come from the same codebase family, so the evidence
-  shows the transcript shape is what Google's servers emit, not that every v1 log agrees. Nimbus2026
-  (C++) was fetched but its key could not be obtained from a citable source through this path; a
-  mismatch there would be a real finding, not a test bug, and should be investigated as one.
-- **Ed25519.** Registered by section 10.2.2 (0x0807) and deliberately unimplemented: the pinned key
-  must parse as P-256 ECDSA or pinning fails loudly, so there is no path where an Ed25519 log is
-  silently verified under the wrong scheme.
+`tools/fetch_evidence.py` walks the official log list and captures a current head from every log that
+is usable or read-only. The result is interoperability evidence across independent implementations,
+which is the thing a spec-derived test cannot supply:
+
+| Operator | Logs captured | All heads verified under their published keys |
+|---|---|---|
+| Google | 4 (Argon/Xenon 2026h2, 2027h1) | yes |
+| Cloudflare | 2 (Nimbus2026, Nimbus2027) | yes |
+| DigiCert | 6 (Wyvern, Sphinx) | yes |
+| Sectigo | 8 (Mammoth, Sabre, Elephant, Tiger) | yes |
+| TrustAsia | 3 (log2026a/b, HETU2027) | yes |
+| **Total** | **23** (21 usable, 2 read-only) | **23 of 23** |
+
+Each `log_id` was also confirmed to equal SHA-256 over the published DER SPKI, and each head was
+confirmed *not* to verify under the next log's key. `tests/test_production_sths.py` runs offline from
+`tests/fixtures/log-list-sweep.json`; the fixture carries the fetch timestamp and the list version
+(96.2, `log_list_timestamp` 2026-11-05T13:36:08Z) so a future run can tell whether the world moved.
+
+## A production consistency proof, verified
+
+`tests/fixtures/production-proofs.json` holds a real `get-sth-consistency?first=1&second=<N>`
+response from Google Xenon2026h2, where N is a little over 3 billion, the signed head it was issued
+against (fetched twice, bracketing the proof, and identical both times), and the raw entry 0 whose leaf
+hash is the older root. My verifier reproduces the signed root from 32 audit nodes. The older root
+requires no trust in anything but the hash function, which is what makes the check self-evident rather
+than circular.
+
+Three things this measurement produced:
+
+1. **`get-sth-consistency` answers with the field `consistency`.** RFC 6962 section 4.6 names it
+   `audit_consistency`. A client written against the specification alone fails against every log that
+   was asked. The fixture records which name each response used.
+2. **For `first == 1` the proof does not contain the leaf hash**, and step 2's "if first is an exact
+   power of 2, prepend `first_hash`" therefore applies to 1 as well, not only to 2, 4, 8. Verified by
+   the fact that the prepended fold lands exactly on the root the log signed.
+3. **No deployed log served an inclusion proof.** All 23 operational logs were asked for
+   `get-inclusion-proof-by-hash`: **20 answered 404, two answered 403**, and one answered 429 (a
+   throttle, not an answer about the endpoint, so it is not counted either way). Either the RFC 6962
+   section 4.5 endpoint is not deployed, or these operators expose audit paths some other way.
+   `test_no_deployed_log_would_give_an_inclusion_proof` pins the absence *with the reasons*, so the gap
+   is visible in the suite rather than remembered by whoever found it. Inclusion is currently pinned by
+   the specification's worked example only (`test_merkle.py`).
+
+## A property of the algorithm, found by accident and pinned on purpose
+
+With `first == 1`, section 2.1.4.2's loop leaves `fn` at 0, so `fr` never moves and `second` ends up
+constrained only by how far it shifts toward 0. A proof for the live tree also folds when `second` is
+claimed as a few entries less - provided `second_hash` is still the root of the larger tree.
+
+The expectation that caught this was mine, and it was the expectation that was wrong: the first version
+of `test_the_same_proof_refuses_a_different_history` asserted the verifier would refuse a smaller
+claimed size. To find out whether the library or the algorithm was at fault, I transcribed section
+2.1.4.2 a second time in `sdk-forge/probe_consistency_soundness.py` and compared the two over every
+honest small-tree pair: identical, and both accept. So this is the specification, not a transcription
+error - and the reason it is not a forgery is that `tree_size` and `root_hash` are signed together, so
+no caller that takes both from one verified head can be misled. Callers that take them from two places
+can be, which is why `verify_consistency`'s docstring says so and `HeadStore` cannot be given a size
+without its bound root.
+

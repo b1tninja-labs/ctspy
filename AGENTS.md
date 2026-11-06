@@ -20,6 +20,11 @@ The first line installs the dev extras. The six commands after it are the gates,
 and all six must pass before a change is finished. CI runs the same set on Linux
 and Windows, plus the suite under `python -O`.
 
+`python tools/fetch_evidence.py` is deliberately not in that list. It reaches the network and
+rewrites the fixtures under `tests/fixtures/`, so it is run on purpose rather than incidentally - by a
+person deciding the evidence should be refreshed, never by CI. The tests read those fixtures offline,
+which is what keeps a log operator's bad afternoon from turning into a red build here.
+
 ## Invariants
 
 These are the points where a plausible-looking change makes the project wrong

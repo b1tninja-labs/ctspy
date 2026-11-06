@@ -1,0 +1,82 @@
+{
+  "consistency_field": "consistency",
+  "consistency_proof": {
+    "consistency": [
+      "7ImIR/Rfihn44mh1xGCAPrAMDFHCN3ASetc2Ns3O4t4=",
+      "4Rof3WfUg5MyrBMh5A3x5atxhvsfLXR23l2eAin6RDk=",
+      "vzhMs0tVgUKy4g9wZ1LPKLrUbtEDolZL23oNP+fjDk4=",
+      "tLs+EuB8xfwFKD9wg7iNA3a6tEkBq8Nk6/eh6jOXyuI=",
+      "t7B6lfVf6qVDz0ugZNSSnJEF4OOsjV5NX0Ep1FiS+Ms=",
+      "rHnD3OY2oPwQDEmw2qI37ULcPXapr/6Ne4vVAcX7IJI=",
+      "RbjaIQTUVSDMRCJYhKIYMwc7zXIDcfubZRobLy6HJjg=",
+      "oiAcVqP7i+z0Rn6ClhOQgsXW8s52GCNQJgZZ/Y60uAs=",
+      "Z3JICVa4FDj5GUeYDGO2azE2rqeEk7+wKik5jp+EyvY=",
+      "Zfj0oM0J+LR/eupi4I4RC2SWvf0/zICSqkGoVPqqiqU=",
+      "Kni+vUGYBXwsibeTID93FiuZKoXZ1fdHlrRqj3tul3o=",
+      "2/QlSnx3mEWJTtwH2IWOKht2rmF6yVoTNVrcDqsej7I=",
+      "73IrPIE1cg5ImExIy1amJ7nFLCNphF+q2dPUicMobxs=",
+      "9tInawqLhyIbIEVghMzWpesIdvDBB5r3p8pMVi9B8+E=",
+      "USsxPJvbnbAeeeQ3gFTD3xv2YHVbpmS0oHW+wu0g8mQ=",
+      "Nc42wco8rYGhweBaFCa3YdGhOXTrS1Lni7uUWc/Golk=",
+      "C5kFW10bWh2leRjf1QtfHBcp6qx4gBNza7Sac1/WVSg=",
+      "sEzFTQd3KzBgha47KuBI+kY5CT7sWL3sOskkXABSGVo=",
+      "Sz3cMdTocLsSte6WkHti6wheeTX95aX5q8KhPlNjyO4=",
+      "+AIdpiwK1htrFSYdQFkDIQJLgPHzzFemYmwpU72Hv+A=",
+      "Ipp3H3DojMS/Q1K/EfnEZ70AhZaVgkofhG9NScVeUM0=",
+      "KobPGW5pYuysjVw963JCsad7k8jnXHqAdh/aQOsJ/Y4=",
+      "OcojZ/N1XMmNUqqJ2BzVgPC0TvtgmQTpeyatgMNo5Ag=",
+      "56e14eRF3QzhDdaaH0MWJ015OHHJaw6O6914rbbBH94=",
+      "2QxjNkm/KKO1DYJ6Go7QuQHX9drYjiNHI+7r2es3gB8=",
+      "57O8tCqkY/SR4JHgbJdtg82dlWmmdSvqfLkNOm7sVUg=",
+      "kprKd9DrT6IiIMic+gJzUH4JSdHSCIRWuY3sYtuvU1U=",
+      "d8wcSnp1xKyHZYIDkQPh6zRJxQyIJm9JJW9i0Ih0s+s=",
+      "QpYePPfqWC4ouH23bEOkbnBQVkJt4yKKdHFcdixDNZo=",
+      "NG9jAlg+ndyhqmV/9FvdSf1T/inA/myhgNDQ+JLUvCk=",
+      "mkGFszQWx+SZ2JKKDuQeo4tVAadq4fNVp8zNyeEOTHM=",
+      "Ig6r/nK8BCeQSNfmDMch8LryCT8VjVKs/Ffb8ayDZ1w="
+    ]
+  },
+  "entry": {
+    "index": 0,
+    "leaf_input": "AAAAAAGQETJORwAB43aJADBzoMZJzGVt6UbAMXTSXFZv48OAW4RvUjaUN5gAAtswggLXoAMCAQICBwYawyyA6E4wDQYJKoZIhvcNAQELBQAwfzELMAkGA1UEBhMCR0IxDzANBgNVBAgMBkxvbmRvbjEXMBUGA1UECgwOR29vZ2xlIFVLIEx0ZC4xITAfBgNVBAsMGENlcnRpZmljYXRlIFRyYW5zcGFyZW5jeTEjMCEGA1UEAwwaTWVyZ2UgRGVsYXkgSW50ZXJtZWRpYXRlIDEwHhcNMjQwNjEzMTA0MzQ3WhcNMjYxMTE4MjAxNzU5WjBjMQswCQYDVQQGEwJHQjEPMA0GA1UEBwwGTG9uZG9uMSgwJgYDVQQKDB9Hb29nbGUgQ2VydGlmaWNhdGUgVHJhbnNwYXJlbmN5MRkwFwYDVQQFExAxNzE4Mjc1NDI3ODU0NDE0MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsVotl/HczabMfG5DseuE4PZyKfDcm2po5j3CzpBo9ErKd9a8/BQOnd9+HKhTDEFYRkgiOxNX5+GtSHoBuAa28FU1p+w6uQLDjE1acDWvxXwqgpRqLl8LeyoMA8LbHsuMUVQarSa/OkiZISGddQRa2GxbGW4ITvYnkgdx4KOgCoIimyhu1GrZJg9DcUVteWiO65VoXu9+n0XBWAyiykfuzVSP1fps9zWfxjx2yxEqxhkofulIz1ti5f8ZQPpUu9GJPEVkO1qFeokcNB/z/u5xhJ2QCM46+bSsQmYZ4CqNAI+LufdIgTBpIK9DijqbjfCzMjNaBIi88T4kqB9vyLcwmwIDAQABo4GLMIGIMBMGA1UdJQQMMAoGCCsGAQUFBwMBMCMGA1UdEQQcMBqCGGZsb3dlcnMtdG8tdGhlLXdvcmxkLmNvbTAMBgNVHRMBAf8EAjAAMB8GA1UdIwQYMBaAFOk8BOGAL8KEEy0mcJ7y/RrPqv7GMB0GA1UdDgQWBBS4AeyNNX7ncgTELxVjttf+N/JAGAAA"
+  },
+  "head": {
+    "sha256_root_hash": "j6WppvXp9zkJMNmMnqoJ+c7Z7xAtT6i/fQN4VDbqMcU=",
+    "timestamp": 1793973462903,
+    "tree_head_signature": "BAMARzBFAiBeSuKE3xU72nuFDYVHhbuUTO0UO6M/N/JYQCzwOYXxSQIhANFFD2u5LgDiOgh7CHueELNT0IwaqZFej/xvRz4iQcHq",
+    "tree_size": 3024272907
+  },
+  "inclusion": null,
+  "inclusion_failures": {
+    "https://ct.cloudflare.com/logs/nimbus2026": "RuntimeError: HTTPError: HTTP Error 403: Forbidden",
+    "https://ct.cloudflare.com/logs/nimbus2027": "RuntimeError: HTTPError: HTTP Error 403: Forbidden",
+    "https://ct.googleapis.com/logs/eu1/xenon2026h2": "RuntimeError: HTTPError: HTTP Error 404: Not Found",
+    "https://ct.googleapis.com/logs/eu1/xenon2027h1": "RuntimeError: HTTPError: HTTP Error 404: Not Found",
+    "https://ct.googleapis.com/logs/us1/argon2026h2": "RuntimeError: HTTPError: HTTP Error 404: Not Found",
+    "https://ct.googleapis.com/logs/us1/argon2027h1": "RuntimeError: HTTPError: HTTP Error 404: Not Found",
+    "https://ct2026-a.trustasia.com/log2026a": "HTTPError: HTTP Error 429: Too Many Requests",
+    "https://ct2026-b.trustasia.com/log2026b": "RuntimeError: HTTPError: HTTP Error 404: Not Found",
+    "https://elephant2026h2.ct.sectigo.com": "RuntimeError: HTTPError: HTTP Error 404: Not Found",
+    "https://elephant2027h1.ct.sectigo.com": "RuntimeError: HTTPError: HTTP Error 404: Not Found",
+    "https://elephant2027h2.ct.sectigo.com": "RuntimeError: HTTPError: HTTP Error 404: Not Found",
+    "https://hetu2027.trustasia.com/hetu2027": "RuntimeError: HTTPError: HTTP Error 404: Not Found",
+    "https://mammoth2026h2.ct.sectigo.com": "RuntimeError: HTTPError: HTTP Error 404: Not Found",
+    "https://sabre2026h2.ct.sectigo.com": "RuntimeError: HTTPError: HTTP Error 404: Not Found",
+    "https://sphinx.ct.digicert.com/2026h2": "RuntimeError: HTTPError: HTTP Error 404: Not Found",
+    "https://sphinx.ct.digicert.com/2027h1": "RuntimeError: HTTPError: HTTP Error 404: Not Found",
+    "https://sphinx.ct.digicert.com/2027h2": "RuntimeError: HTTPError: HTTP Error 404: Not Found",
+    "https://tiger2026h2.ct.sectigo.com": "RuntimeError: HTTPError: HTTP Error 404: Not Found",
+    "https://tiger2027h1.ct.sectigo.com": "RuntimeError: HTTPError: HTTP Error 404: Not Found",
+    "https://tiger2027h2.ct.sectigo.com": "RuntimeError: HTTPError: HTTP Error 404: Not Found",
+    "https://wyvern.ct.digicert.com/2026h2": "RuntimeError: HTTPError: HTTP Error 404: Not Found",
+    "https://wyvern.ct.digicert.com/2027h1": "RuntimeError: HTTPError: HTTP Error 404: Not Found",
+    "https://wyvern.ct.digicert.com/2027h2": "RuntimeError: HTTPError: HTTP Error 404: Not Found"
+  },
+  "key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE5Xd4lXEos5XJpcx6TOgyA5Z7/C4duaTbQ6C9aXL5Rbqaw+mW1XDnDX7JlRUninIwZYZDU9wRRBhJmCVopzwFvw==",
+  "origin": "https://ct.googleapis.com/logs/eu1/xenon2026h2",
+  "provenance": {
+    "fetched_utc": "2026-11-06T13:59:08+00:00",
+    "note": "Verbatim get-entries, get-sth, get-sth-consistency and (if any log served one) get-inclusion-proof-by-hash bodies. The head was fetched twice and agreed, which is what makes the proof verifiable offline.",
+    "origin": "https://ct.googleapis.com/logs/eu1/xenon2026h2"
+  }
+}

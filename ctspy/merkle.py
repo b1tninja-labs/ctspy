@@ -208,6 +208,17 @@ def verify_consistency(
     history has to break it, so the empty-proof refusal (step 1) and the three-way comparison in
     step 7 - both roots *and* `sn == 0` - are not fussy details. Dropping the `sn` check accepts a
     proof that accounts for only part of the newer tree.
+
+    One asymmetry in the specified algorithm is worth knowing before calling it. When `first == 1`,
+    step 3 leaves `fn` at 0: LSB(fn) is never set and `fn == sn` never holds, so every element takes
+    the "Otherwise" branch, `fr` never moves, and `second` is constrained only by how far it shifts
+    toward 0. A proof for one tree size therefore also folds for a few smaller claimed sizes, as long
+    as `second_hash` is the root of the larger tree. That is not exploitable through a signed head -
+    the STH signature covers `tree_size` and `root_hash` together, so the pair cannot be split - but it
+    means this function must always be given the size and the root from the *same* verified artifact,
+    never from two places. `ctspy`'s own callers do; see
+    `tests/test_production_proofs.py::test_second_is_weak_when_first_is_one_and_the_signature_is_what_pins_it`,
+    which pins the behavior against a real 3-billion-entry proof rather than a made-up one.
     """
     if not 0 < first < second:
         raise ProofFormatError(f"consistency needs 0 < first < second, got {first} and {second}")
