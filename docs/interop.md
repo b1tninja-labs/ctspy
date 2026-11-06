@@ -78,22 +78,27 @@ Three things this measurement produced:
    `/ct/v1/get-inclusion-proof-by-hash`, **a path defined in no RFC**, and sent only `hash` where section 4.5
    requires `hash` and `tree_size`. The logs were refusing a question nobody specifies.
 
-   Asked at section 4.5's real path with both inputs, **22 of 23 returned an audit path that verified against
-   the head that log signed**, and the 23rd answered 429 - a throttle, seen from a different log on a
-   different run, so it is not a statement about the endpoint. Proof lengths ran from 15 nodes on a freshly
-   opened log to 33 on a 6.7-billion-entry static-merge tree. `fixtures/production-inclusion.json` and
-   `tests/test_production_inclusion.py` carry this, and the old test now asserts the retraction rather than
-   the disproof.
+   Asked at section 4.5's real path with both inputs, **every log that was asked returned an audit path that
+   verified against the head that log signed** - 23 of 23 on the run that wrote the fixture, 22 of 23 on the
+   run before it where one log throttled with 429 (a *different* log throttled on another run, so throttling
+   is about rate limits and not about the endpoint). Proof lengths ran from 15 nodes on a freshly opened log
+   to 33 on a 6.7-billion-entry static-merge tree. `tools/fetch_evidence.py inclusion_sweep()` writes
+   `fixtures/production-inclusion.json`, so the evidence names a command that exists;
+   `tests/test_production_inclusion.py` re-verifies it offline, and the old test now asserts the retraction
+   rather than the disproof.
 
    Two things came out of getting this wrong. The first is the obvious one: **a measurement is only as good as
    the request**, and "measured, not read" is not a safety property if the request was written from memory -
    the sentence "the RFC says X stops being sufficient evidence the moment the fleet says Y" cuts both ways,
-   and here the fleet never said Y at all. The second is a real interop trap found while re-checking, because
-   the first re-run failed for unrelated reasons: `get-sth`'s `tree_head_signature` is RFC 5246's
-   `DigitallySigned` - hash algorithm, signature algorithm, a 2-byte length, then the DER signature - and the
-   transcript was signed over the **inner** bytes. Hand the served value straight to an ECDSA verifier and
-   every log in the fleet looks broken. That is worth pinning, and it was found by a probe that was wrong
-   before it was right.
+   and here the fleet never said Y at all. The second is a real trap for clients, found because the first
+   re-run failed for reasons that had nothing to do with the fleet: `get-sth`'s `tree_head_signature` is RFC
+   5246's `DigitallySigned` - hash algorithm, signature algorithm, a 2-byte length, then the DER signature -
+   and the transcript was signed over the **inner** bytes. `SignedTreeHeadV1.from_v1_json` already unwraps it
+   and refuses a wrapper that is missing or malformed; the failure came from a probe that bypassed that parser
+   and built the dataclass by hand, which made 23 healthy logs look compromised. Two things worth keeping
+   from that: use the parse path rather than assembling structs from JSON, and note that the mistake failed
+   loudly - a `VerificationError`, not a wrong answer - which is the property the strict reader exists to
+   have.
 
 ## My tree hash, checked against production data
 

@@ -29,6 +29,7 @@ import datetime
 import hashlib
 import json
 import pathlib
+import re
 import socket
 import ssl
 import sys
@@ -895,6 +896,134 @@ def sct_signatures(out: pathlib.Path) -> None:
     )
 
 
+INCLUSION_CAPTURES = (
+    "https://ct.googleapis.com/logs/us1/argon2026h2",
+    "https://ct.cloudflare.com/logs/nimbus2026",
+)
+
+
+def failure_kind(detail: str) -> str:
+    """Name a refusal by its HTTP status when it has one.
+
+    "HTTP 429" is a throttle and says nothing about whether the endpoint exists; "HTTP 404" is an answer about
+    the endpoint. Burying both in prose is how a rate limiter got read as an absent feature once already, so
+    the status is the first token of the string the fixture stores.
+    """
+    match = re.search(r"HTTP Error (\d{3})", detail)
+    return f"HTTP {match.group(1)}" if match else f"REFUSED: {detail[:90]}"
+
+
+def _inclusion_capture(
+    log: dict, head_json: dict, head: sth.SignedTreeHeadV1, served: dict, index: int, path: tuple
+) -> dict:
+    """One verifiable capture: the entry, the head that commits to it, and the path between them.
+
+    Everything is stored as served - the head verbatim, the path in the base64 the log used - so the test
+    recomputes from inputs rather than replaying a conclusion. `signature_shape` records what the wrapper
+    declared, which is the part of `tree_head_signature` a client that skips the parser gets wrong.
+    """
+    return {
+        "origin": log["url"],
+        "description": log["description"],
+        "operator": log["operator"],
+        "log_id": log["log_id"],
+        "key": log["key"],
+        "signed_tree_head": head_json,
+        "signature_shape": (
+            f"DigitallySigned(hash={head.hash_algorithm} sig={head.signature_algorithm})"
+        ),
+        "leaf_index": index,
+        "leaf_input": served["leaf_input"],
+        "extra_data": served["extra_data"],
+        "audit_path": [base64.b64encode(node).decode() for node in path],
+        "asked": "/ct/v1/get-proof-by-hash?hash=<leaf 0 hash>&tree_size=<the head beside this proof>",
+    }
+
+
+def _write_inclusion_fixture(out: pathlib.Path, results: dict, captured: list) -> None:
+    """Write the inclusion fixture, refusing to overwrite good evidence with a worse run."""
+    missing = [url for url in INCLUSION_CAPTURES if url not in results]
+    if missing:
+        raise RuntimeError(f"designated capture logs vanished from the list: {missing}")
+    if len(captured) != len(INCLUSION_CAPTURES):
+        raise RuntimeError(
+            "a designated capture log refused an inclusion proof - that is a finding worth publishing, "
+            f"not a fixture to overwrite: {results}"
+        )
+
+    tally: dict[str, int] = {}
+    for value in results.values():
+        kind = value.split(" ", 1)[0]
+        tally[kind] = tally.get(kind, 0) + 1
+    document = {
+        "provenance": {
+            "fetched_utc": now(),
+            "tool": "tools/fetch_evidence.py inclusion_sweep()",
+            "spec": "RFC 6962 section 4.5: GET /ct/v1/get-proof-by-hash, inputs hash and tree_size, "
+            "outputs leaf_index and audit_path",
+            "trust": "Each head is parsed by SignedTreeHeadV1.from_v1_json and verified against the key the "
+            "Chrome log list publishes for that log before its audit path is checked, so the fixture "
+            "authenticates its own root.",
+            "retraction": "An earlier sweep asked /ct/v1/get-inclusion-proof-by-hash, a path defined in no "
+            "RFC, and recorded the resulting 404s as evidence that no deployed log serves inclusion proofs. "
+            "That finding was an artifact of the question asked and is retracted: the endpoint section 4.5 "
+            "actually defines is served by every log that answered.",
+        },
+        "tally": tally,
+        "results": results,
+        "proofs": captured,
+    }
+    path = out / "production-inclusion.json"
+    path.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print(f"wrote {path} ({len(captured)} captured, {len(results)} asked, tally {tally})")
+
+
+def inclusion_sweep(out: pathlib.Path) -> None:
+    """Ask every usable log for an inclusion proof by hash, and capture two of them in full.
+
+    The endpoint is RFC 6962 section 4.5's `get-proof-by-hash`, and it takes both of its documented inputs:
+    `hash`, and the `tree_size` of an existing v1 STH. An earlier version of this sweep asked
+    `/ct/v1/get-inclusion-proof-by-hash` - a path that appears in no specification - with only a hash, mistook
+    the resulting 404s for "no deployed log serves inclusion proofs", and that claim reached three documents
+    before anyone read the request back. A sweep measures its own request as much as it measures the fleet.
+
+    Each head is read with `SignedTreeHeadV1.from_v1_json`, which takes the signature out of its RFC 5246
+    `DigitallySigned` wrapper and refuses a response that is not what it claims, and is then verified against
+    the key the log list publishes for that log *before* any audit path is checked against it. The fixture
+    therefore authenticates its own root rather than being handed a hash to trust.
+    """
+    results: dict[str, str] = {}
+    captured: list[dict] = []
+    for log in usable_logs():
+        origin = log["url"]
+        try:
+            head_json = get_json(f"{origin}/ct/v1/get-sth")
+            head = sth.SignedTreeHeadV1.from_v1_json(head_json)
+            sth.verify(head, EcdsaKey.from_spki(base64.b64decode(log["key"])))
+            served = get_json(f"{origin}/ct/v1/get-entries?start=0&end=0")["entries"][0]
+            leaf_hash = merkle.leaf_hash(base64.b64decode(served["leaf_input"]))
+            proof, error = try_inclusion(origin, leaf_hash, head.tree_size)
+            if proof is None:
+                results[origin] = failure_kind(error or "no proof returned")
+            else:
+                path = tuple(base64.b64decode(node) for node in proof["audit_path"])
+                index = int(proof["leaf_index"])
+                if not merkle.verify_inclusion(
+                    leaf_hash, index, head.tree_size, path, head.root_hash
+                ):
+                    results[origin] = "PROOF-FAILS"
+                else:
+                    results[origin] = f"PROOF-VERIFIES ({len(path)} nodes, tree {head.tree_size})"
+                    if origin in INCLUSION_CAPTURES:
+                        captured.append(
+                            _inclusion_capture(log, head_json, head, served, index, path)
+                        )
+        except Exception as exc:
+            results[origin] = failure_kind(f"{type(exc).__name__}: {exc}")
+        print(f"  {results[origin]:48} {origin}", flush=True)
+    _write_inclusion_fixture(out, results, captured)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--out", type=pathlib.Path, default=pathlib.Path("tests/fixtures"))
@@ -914,6 +1043,11 @@ def main() -> int:
     )
     parser.add_argument(
         "--skip-layout", action="store_true", help="do not refetch the extra_data layout survey"
+    )
+    parser.add_argument(
+        "--skip-inclusion",
+        action="store_true",
+        help="do not refetch the get-proof-by-hash sweep and captures",
     )
     parser.add_argument(
         "--only-layout",
@@ -944,6 +1078,8 @@ def main() -> int:
         sct_signatures(args.out)
     if not args.skip_layout:
         extra_layout(args.out)
+    if not args.skip_inclusion:
+        inclusion_sweep(args.out)
     return 0
 
 

@@ -4,9 +4,10 @@ This file exists because of a retraction. An earlier sweep asked `/ct/v1/get-inc
 path defined in no RFC - and recorded the resulting 404s as "no deployed log serves inclusion proofs", which
 was then repeated in `docs/interop.md`, the roadmap and `PORTFOLIO.md`. The finding was an artifact of the
 question asked: RFC 6962 section 4.5 defines `get-proof-by-hash` with inputs `hash` and `tree_size` and
-outputs `leaf_index` and `audit_path`, and asked properly, every log in the list answered. 22 of 23 verified
-on the run that wrote this fixture; the one that did not answered 429, which is a throttle and not a
-statement about the endpoint.
+outputs `leaf_index` and `audit_path`, and asked properly every log answered. The run that wrote the fixture
+in `tests/fixtures/production-inclusion.json` verified **23 of 23**; the run before it verified 22 of 23 and
+one log throttled with 429, and an earlier run throttled a different log - so the throttle is about rate
+limits, not about the endpoint.
 
 What the fixture supports is therefore stronger than what it used to claim. Each head is a verbatim
 `get-sth` response, its signature checked against the key the Chrome log list publishes for that log, and the
@@ -38,22 +39,19 @@ BY_ORIGIN = {proof["origin"]: proof for proof in PROOFS}
 
 
 def _head(proof: dict) -> SignedTreeHeadV1:
-    served = proof["signed_tree_head"]
-    raw = base64.b64decode(served["tree_head_signature"])
-    # `tree_head_signature` is RFC 5246's DigitallySigned: hash(1), signature(1), length(2), then the
-    # signature itself. The transcript was made over the inner bytes, so the wrapper comes off here rather
-    # than being hidden inside a parse step - those four bytes are part of what the log sent. A raise rather
-    # than an assert, because a helper's checks must survive `python -O`; only test bodies keep asserts.
-    if int.from_bytes(raw[2:4], "big") != len(raw) - 4:
-        raise AssertionError(
-            f"{proof['origin']}: unexpected signature shape {proof['signature_shape']}"
-        )
-    return SignedTreeHeadV1(
-        timestamp=int(served["timestamp"]),
-        tree_size=int(served["tree_size"]),
-        root_hash=base64.b64decode(served["sha256_root_hash"]),
-        signature=raw[4:],
-    )
+    """The head as the library reads it, not as this test assembles it.
+
+    `from_v1_json` is the path a client takes: it lifts the signature out of its RFC 5246 `DigitallySigned`
+    wrapper, refuses fields that are not what they claim, and keeps the declared algorithm pair. Building the
+    dataclass from raw JSON by hand was tried first, in the probe that wrote the earlier version of this
+    fixture, and it made the whole fleet look broken - exactly the mistake the parser exists to prevent.
+    Re-implementing it here would hide that lesson rather than test it.
+    """
+    head = SignedTreeHeadV1.from_v1_json(proof["signed_tree_head"])
+    # 4 is sha256, 3 is ecdsa (RFC 5246 section 7.4.1.4.1). If a log declares otherwise, this fixture's
+    # description of a v1 head stops being accurate and should say so rather than verify something else.
+    assert (head.hash_algorithm, head.signature_algorithm) == (4, 3), proof["signature_shape"]
+    return head
 
 
 def test_every_captured_head_verifies_against_its_published_key() -> None:
