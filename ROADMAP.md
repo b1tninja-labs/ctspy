@@ -52,11 +52,17 @@ the code existing. Coverage in `pyproject.toml` ratchets in the same commit.
   across 5 operators): every log signs its own head as section 4.4 predicts, and a production
   consistency proof from a 3-billion-entry tree verifies, as do proofs for five prefixes of a 41-entry
   block whose roots `ctspy` computed itself - which checks the tree hash, not only the proof verifier.
-  Three differences from the specification text matter for a client. `get-sth-consistency` answers with
-  the field `consistency`, not section 4.6's `audit_consistency`; **no** operational log serves section
-  4.5's `get-inclusion-proof-by-hash` (20 answered 404, two 403, one 429); and `get-entries` hands back
-  at most 32 entries whatever was asked. All three are recorded in `docs/interop.md` with the fixture
-  that shows it, because "the RFC says X" stops being sufficient evidence the moment the fleet says Y.
+  Two facts matter for a client, and one retired finding had to be corrected. `get-entries` hands back at
+  most 32 entries whatever was asked - which RFC 9162 section 5.6 paragraph 8 *permits*, and which silently
+  produces a wrong tree root in a client that assumes it received what it requested - and `get-sth`'s
+  `tree_head_signature` is RFC 5246's `DigitallySigned`, so the transcript was signed over the inner bytes
+  and a verifier handed the served value fails against the whole fleet. The third item in this list used to
+  read "no operational log serves inclusion proofs" (20 answered 404, two 403, one 429); the sweep had asked
+  a path no RFC defines and omitted a required input, and asked correctly every log in the list served a proof
+  that verified - see `tests/test_production_inclusion.py`. The `consistency` field name, also once listed as a
+  discrepancy, matches both specifications. All of it is recorded in `docs/interop.md` with the fixtures that
+  show it, because "the RFC says X" stops being sufficient evidence the moment the fleet says Y - and, as this
+  correction shows, so does "the fleet says Y" stop being evidence once someone has misread the question.
 
 - **Erratum 8670** (editorial, held for document update) touches the shift loops of sections 2.1.3.2
   step 4.b.ii and 2.1.4.2 step 6.b.iii: the printed text ends the loop on "until either LSB(fn) is

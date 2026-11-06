@@ -277,13 +277,14 @@ def tree_sweep(out: pathlib.Path, origin: str) -> None:
 
 
 def consistency_nodes(body: dict) -> tuple[list[str], str]:
-    """The audit path, wherever this log chose to put it.
+    """The audit path, and the field name the log actually used.
 
-    RFC 6962 section 4.6 names the response field `audit_consistency`. Google's servers answer with
-    `consistency` instead. A client that follows the specification text alone fails against every
-    deployed log, and "fix" it by accepting both - recording which one the log actually used, because
-    the difference between the specification and the deployment is the kind of fact that only survives
-    if someone writes it down.
+    Both specifications name the output `consistency` - RFC 6962 section 4.4 for v1, RFC 9162 section 5.3 for
+    v2 - so there is no specification-versus-deployment story here, and an earlier version of this docstring
+    claimed one (`audit_consistency`, attributed to section 4.6) that is in neither document: the name with
+    "audit" in it is `audit_path`, in section 4.5. What the two versions *do* differ about is the value: v1 is
+    an array of base64 node hashes, v2 a single base64 `TransItem`. The fallback stays because accepting both
+    names costs nothing and records which one appeared, which is the part worth keeping.
     """
     for name in ("consistency", "audit_consistency"):
         nodes = body.get(name)
@@ -292,10 +293,16 @@ def consistency_nodes(body: dict) -> tuple[list[str], str]:
     raise KeyError(f"no audit path field; keys present: {sorted(body)}")
 
 
-def try_inclusion(origin: str, leaf_hash: bytes) -> tuple[dict | None, str | None]:
-    """Ask one log for an inclusion proof by hash, or return the reason it could not."""
+def try_inclusion(origin: str, leaf_hash: bytes, tree_size: int) -> tuple[dict | None, str | None]:
+    """Ask one log for an inclusion proof by hash, or return the reason it could not.
+
+    Section 4.5 requires both inputs: the leaf hash *and* the `tree_size` of an existing v1 STH. A probe that
+    sends only the hash, or that reaches for a path the specification does not define - which is exactly how
+    the "no deployed log serves inclusion proofs" finding was produced and later retracted - measures its own
+    URL rather than the fleet.
+    """
     encoded = urllib.parse.quote(base64.b64encode(leaf_hash).decode(), safe="")
-    url = f"{origin}/ct/v1/get-inclusion-proof-by-hash?hash={encoded}"
+    url = f"{origin}/ct/v1/get-proof-by-hash?hash={encoded}&tree_size={tree_size}"
     try:
         return get_json(url), None
     except Exception as exc:
@@ -315,7 +322,7 @@ def inclusion_evidence(origin: str) -> dict:
     leaf_hash = merkle.leaf_hash(leaf_input)
 
     before = get_json(f"{origin}/ct/v1/get-sth")
-    proof, error = try_inclusion(origin, leaf_hash)
+    proof, error = try_inclusion(origin, leaf_hash, int(before["tree_size"]))
     after = get_json(f"{origin}/ct/v1/get-sth")
     if proof is None:
         raise RuntimeError(error or "no proof returned")
@@ -398,7 +405,7 @@ def proofs(out: pathlib.Path, origin: str, alternates: list[str]) -> int:
             "fetched_utc": now(),
             "origin": origin,
             "note": "Verbatim get-entries, get-sth, get-sth-consistency and (if any log served one) "
-            "get-inclusion-proof-by-hash bodies. The head was fetched twice and agreed, which is what "
+            "get-proof-by-hash bodies. The head was fetched twice and agreed, which is what "
             "makes the proof verifiable offline.",
         },
         "origin": origin,

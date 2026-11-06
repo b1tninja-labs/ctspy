@@ -61,19 +61,39 @@ than circular.
 
 Three things this measurement produced:
 
-1. **`get-sth-consistency` answers with the field `consistency`.** RFC 6962 section 4.6 names it
-   `audit_consistency`. A client written against the specification alone fails against every log that
-   was asked. The fixture records which name each response used.
+1. **The consistency-proof field is `consistency`, and both specifications agree on that name.** An earlier
+   version of this item said deployment contradicted the specification here ("6962 section 4.6 names it
+   `audit_consistency`") and was wrong twice over: section 4.6 is `get-entries`, and `audit_consistency`
+   appears nowhere in RFC 6962 or RFC 9162 - the name carrying "audit" is `audit_path`, in section 4.5. What
+   the two versions really differ on is the **value**: v1 (section 4.4) returns an array of base64 node
+   hashes, v2 (section 5.3) a single base64 `TransItem` of type `consistency_proof_v2`. A client that reads
+   one shape as the other is the one that fails against every log it asks, and the fixture still records which
+   field name each response used.
 2. **For `first == 1` the proof does not contain the leaf hash**, and step 2's "if first is an exact
    power of 2, prepend `first_hash`" therefore applies to 1 as well, not only to 2, 4, 8. Verified by
    the fact that the prepended fold lands exactly on the root the log signed.
-3. **No deployed log served an inclusion proof.** All 23 operational logs were asked for
-   `get-inclusion-proof-by-hash`: **20 answered 404, two answered 403**, and one answered 429 (a
-   throttle, not an answer about the endpoint, so it is not counted either way). Either the RFC 6962
-   section 4.5 endpoint is not deployed, or these operators expose audit paths some other way.
-   `test_no_deployed_log_would_give_an_inclusion_proof` pins the absence *with the reasons*, so the gap
-   is visible in the suite rather than remembered by whoever found it. Inclusion is currently pinned by
-   the specification's worked example only (`test_merkle.py`).
+3. **Retracted, then reversed: every deployed log serves inclusion proofs.** This item previously read "no
+   deployed log served an inclusion proof" - 20 of 23 answered 404, two 403, one 429 - and that was an
+   artifact of the probe rather than of the fleet. The sweep asked
+   `/ct/v1/get-inclusion-proof-by-hash`, **a path defined in no RFC**, and sent only `hash` where section 4.5
+   requires `hash` and `tree_size`. The logs were refusing a question nobody specifies.
+
+   Asked at section 4.5's real path with both inputs, **22 of 23 returned an audit path that verified against
+   the head that log signed**, and the 23rd answered 429 - a throttle, seen from a different log on a
+   different run, so it is not a statement about the endpoint. Proof lengths ran from 15 nodes on a freshly
+   opened log to 33 on a 6.7-billion-entry static-merge tree. `fixtures/production-inclusion.json` and
+   `tests/test_production_inclusion.py` carry this, and the old test now asserts the retraction rather than
+   the disproof.
+
+   Two things came out of getting this wrong. The first is the obvious one: **a measurement is only as good as
+   the request**, and "measured, not read" is not a safety property if the request was written from memory -
+   the sentence "the RFC says X stops being sufficient evidence the moment the fleet says Y" cuts both ways,
+   and here the fleet never said Y at all. The second is a real interop trap found while re-checking, because
+   the first re-run failed for unrelated reasons: `get-sth`'s `tree_head_signature` is RFC 5246's
+   `DigitallySigned` - hash algorithm, signature algorithm, a 2-byte length, then the DER signature - and the
+   transcript was signed over the **inner** bytes. Hand the served value straight to an ECDSA verifier and
+   every log in the fleet looks broken. That is worth pinning, and it was found by a probe that was wrong
+   before it was right.
 
 ## My tree hash, checked against production data
 

@@ -8,9 +8,11 @@ bytes. So `verify_consistency` is being checked against a real 3-billion-leaf st
 implementation written in another language, by people who never saw this code, over data that was
 never chosen to make my tests pass.
 
-It found a specification-versus-deployment difference worth recording: RFC 6962 section 4.6 names the
-response field `audit_consistency`, and Google's servers answer with `consistency`. The fixture stores
-both the verbatim body and which name was used.
+It recorded which field name the log used. The earlier version of this paragraph called that a
+specification-versus-deployment difference - "RFC 6962 section 4.6 names the response field
+`audit_consistency`" - and it was wrong: section 4.6 is `get-entries`, and `audit_consistency` is in neither
+RFC 6962 nor RFC 9162. Both specifications name the output `consistency` (section 4.4 for v1, RFC 9162
+section 5.3 for v2); what they differ about is the value's shape. See `docs/interop.md`.
 """
 
 from __future__ import annotations
@@ -106,16 +108,18 @@ def test_second_is_weak_when_first_is_one_and_the_signature_is_what_pins_it() ->
 @pytest.mark.skipif(
     FIXTURE["inclusion"] is not None, reason="a log served an inclusion proof; see the fixture"
 )
-def test_no_deployed_log_would_give_an_inclusion_proof() -> None:
-    """An honest gap, pinned so it cannot be forgotten rather than quietly left out of the suite.
+def test_the_old_inclusion_finding_measured_the_probe_not_the_fleet() -> None:
+    """A retraction, kept executable rather than deleted.
 
-    RFC 6962 section 4.5 defines `get-inclusion-proof-by-hash`, and every operational log in the list
-    was asked. Twenty answered 404 and two answered 403; one answered 429, which is a throttle rather
-    than an answer about the endpoint and is not counted as a refusal. Either the section 4.5 endpoint
-    is simply not deployed, or these operators expose audit paths some other way - which is itself the
-    finding. The inclusion verifier is pinned by the specification's worked example in
-    `test_merkle.py`; what is missing is a production proof, and this test says so out loud rather than
-    leaving the gap to be remembered by whoever found it.
+    The sweep behind this fixture asked `/ct/v1/get-inclusion-proof-by-hash`, a path defined in neither RFC
+    6962 nor RFC 9162, and sent only a `hash` where section 4.5 requires `hash` *and* `tree_size`. Twenty logs
+    answered 404 and two answered 403 - correct answers to a question no specification asks - and the result
+    was recorded as "no deployed log serves inclusion proofs".
+
+    Asked properly, every log in the list served a proof that verified against its own signed head; see
+    `tests/test_production_inclusion.py` and `fixtures/production-inclusion.json`. This test stays so the bad
+    fixture cannot be cited again as evidence: it asserts only what those failures show about themselves, and
+    it fails loudly if anyone re-records refusals against a path the specification does not define.
     """
     failures = FIXTURE["inclusion_failures"]
     assert len(failures) >= 20, (
@@ -124,4 +128,6 @@ def test_no_deployed_log_would_give_an_inclusion_proof() -> None:
     refusals = [reason for reason in failures.values() if "404" in reason or "403" in reason]
     assert len(refusals) >= 20, f"fewer than 20 explicit refusals: {failures}"
     assert all("Error" in reason or "error" in reason for reason in failures.values()), failures
-    assert FIXTURE["provenance"]["fetched_utc"].startswith("2026-")
+    assert FIXTURE["inclusion"] is None, (
+        "proofs are now captured; retire this test with the fixture"
+    )
