@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import datetime
 import hashlib
 import json
 import pathlib
@@ -98,7 +99,10 @@ def tail(origin: str, count: int, stats: Counter) -> tuple[list[Leaf], int, int]
     whole lesson of `page_caps.py`: what this client *asked* for is not evidence about the operator, and the
     walk cost in `HARVEST-PLAN.md` is computed from the served figure.
     """
-    head = int(get_json(f"{origin}/ct/v1/get-sth")["tree_size"])
+    head_body = fetch(f"{origin}/ct/v1/get-sth", stats, origin)
+    if head_body is None:
+        return [], 0, 1
+    head = int(head_body["tree_size"])
     start = max(0, head - count)
     cap = 64
     leaves: list[Leaf] = []
@@ -107,29 +111,12 @@ def tail(origin: str, count: int, stats: Counter) -> tuple[list[Leaf], int, int]
     while start + len(leaves) < head:
         want = min(cap, head - start - len(leaves))
         first = start + len(leaves)
-        url = f"{origin}/ct/v1/get-entries?start={first}&end={first + want - 1}"
-        try:
-            body = get_json(url)
-        except urllib.error.HTTPError as exc:
-            stats["http_errors"] += 1
-            if exc.code == 429:
-                stats["throttled_429"] += 1
-                if stats["throttled_429"] > MAX_THROTTLE:
-                    # A log that keeps refusing has answered: "not at this rate". Grinding against it is how a
-                    # crawler gets the endpoint withdrawn for everyone, and the refusal is itself the finding.
-                    print(
-                        f"  {origin}: {stats['throttled_429']} refusals, leaving this log alone "
-                        f"(recorded as a hole, not as absence)"
-                    )
-                    break
-                pause = float(exc.headers.get("Retry-After") or 5.0)
-                print(f"  429 from {origin}; sleeping {pause:.0f}s (recorded, not skipped)")
-                time.sleep(min(pause, 30.0))
-                requests += 1
-                continue
-            print(f"  {exc.code} from {origin}: giving up on this tail")
-            break
         requests += 1
+        body = fetch(
+            f"{origin}/ct/v1/get-entries?start={first}&end={first + want - 1}", stats, origin
+        )
+        if body is None:
+            break
         got = body.get("entries") or []
         if not got:
             break
@@ -144,6 +131,158 @@ def tail(origin: str, count: int, stats: Counter) -> tuple[list[Leaf], int, int]
             leaves.append(Leaf(first + offset, leaf.entry.timestamp, key, kind, issuer))
         time.sleep(DELAY)
     return leaves, served_max, requests
+
+
+def fetch(url: str, stats: Counter, origin: str) -> dict | None:
+    """GET with the refusal policy in one place: a bounded number of retries, then leave the log alone.
+
+    A log that keeps answering 429 has told us "not at this rate". Grinding against it is how a crawler gets an
+    endpoint withdrawn for everyone, so the shortfall comes back as None and is counted - a hole that gets
+    recorded, never a reported absence.
+    """
+    for _attempt in range(MAX_THROTTLE + 1):
+        try:
+            return get_json(url)
+        except urllib.error.HTTPError as exc:
+            stats["http_errors"] += 1
+            if exc.code != 429:
+                print(f"  {exc.code} from {origin}: giving up (recorded as a hole)")
+                return None
+            stats["throttled_429"] += 1
+            if stats["throttled_429"] > MAX_THROTTLE:
+                print(f"  {origin}: {stats['throttled_429']} refusals, leaving this log alone")
+                return None
+            pause = float(exc.headers.get("Retry-After") or 5.0)
+            print(f"  429 from {origin}; sleeping {pause:.0f}s (recorded, not skipped)")
+            time.sleep(min(pause, 30.0))
+        except (
+            Exception
+        ) as exc:  # get_json already retried transport trouble; this is its exhaustion
+            stats["transport_errors"] += 1
+            print(f"  {type(exc).__name__} from {origin}: giving up (recorded as a hole)")
+            return None
+    return None
+
+
+def _time_at(origin: str, index: int, stats: Counter) -> int | None:
+    """The log's own submission timestamp at one tree index - a probe for the seek."""
+    body = fetch(f"{origin}/ct/v1/get-entries?start={index}&end={index}", stats, origin)
+    if body is None:
+        return None
+    entries = body.get("entries") or []
+    if not entries:
+        return None
+    return MerkleTreeLeaf.parse(base64.b64decode(entries[0]["leaf_input"])).entry.timestamp
+
+
+def head_stamp(origin: str, stats: Counter) -> tuple[int, int | None]:
+    """This log's tree size and the timestamp of its newest leaf - the fleet's present, from the log.
+
+    Never `time.time()`. The window has to be an instant the logs actually issued into, so the present is defined
+    by their own signed timestamps and not by the clock of whichever machine happens to be asking; a host clock a
+    few hours ahead aims every seek into the future and every window comes back empty for a reason that looks
+    like an absence.
+    """
+    body = fetch(f"{origin}/ct/v1/get-sth", stats, origin)
+    if body is None:
+        return 0, None
+    head = int(body["tree_size"])
+    if head < 1:
+        return head, None
+    return head, _time_at(origin, head - 1, stats)
+
+
+def window(
+    origin: str, target_ms: int, width_ms: int, cap: int, stats: Counter
+) -> tuple[list[Leaf], int, int]:
+    """Entries this log added inside [target_ms, target_ms + width_ms], located by seeking, not by tailing.
+
+    `get-entries` is indexed and never timed, so comparing two logs on the clock means finding the index of an
+    instant by binary search over a monotone sequence - a log's timestamps are its own insertion times and do not
+    go backwards. Tailing cannot do this at all: 512 entries span 2.7 s in one log and 1,055 s in another, which
+    is why two earlier runs of this tool reported cross-operator pairs as blank and nearly called that a finding.
+    """
+    head_body = fetch(f"{origin}/ct/v1/get-sth", stats, origin)
+    if head_body is None:
+        return [], 0, 1
+    head = int(head_body["tree_size"])
+    requests = 1
+    lo, hi = 0, max(0, head - 1)
+    while lo < hi:
+        mid = (lo + hi) // 2
+        stamp = _time_at(origin, mid, stats)
+        requests += 1
+        if stamp is None:
+            return [], 0, requests
+        if stamp < target_ms:
+            lo = mid + 1
+        else:
+            hi = mid
+    leaves: list[Leaf] = []
+    served_max = 0
+    page = 64
+    index = lo
+    while index < head and len(leaves) < cap:
+        want = min(page, cap - len(leaves), head - index)
+        body = fetch(
+            f"{origin}/ct/v1/get-entries?start={index}&end={index + want - 1}", stats, origin
+        )
+        requests += 1
+        if body is None:
+            break
+        got = body.get("entries") or []
+        if not got:
+            break
+        served_max = max(served_max, len(got))
+        if len(got) < want:
+            page = len(got) or 1
+        for offset, item in enumerate(got):
+            leaf = MerkleTreeLeaf.parse(base64.b64decode(item["leaf_input"]))
+            stamp = leaf.entry.timestamp
+            if stamp > target_ms + width_ms:
+                return leaves, served_max, requests
+            if stamp >= target_ms:
+                key, kind, issuer = entry_key(leaf)
+                leaves.append(Leaf(index + offset, stamp, key, kind, issuer))
+        index += len(got)
+        time.sleep(DELAY)
+    return leaves, served_max, requests
+
+
+def fleet_factor(samples: dict[str, list[Leaf]]) -> dict | None:
+    """Leaves per distinct entry across the interval every sampled log covers - the DER tier's number.
+
+    No single log can answer this, and it is what `HARVEST-PLAN.md` needs: how much of the fleet is the same
+    certificate witnessed again. Computed only over the interval all of them cover, and printed with its n,
+    because a factor from two seconds of issuance is a hint rather than a constant.
+    """
+    if len(samples) < 2:
+        return None
+    # A log with a handful of entries in the window would collapse the common interval to a single instant, so
+    # the aggregate runs over the logs that actually have a sample and says which ones sat out.
+    usable = {name: leaves for name, leaves in samples.items() if len(leaves) >= MIN_PAIR_SAMPLE}
+    if len(usable) < 2:
+        return None
+    low = max(min(x.second for x in leaves) for leaves in usable.values())
+    high = min(max(x.second for x in leaves) for leaves in usable.values())
+    if high <= low:
+        return None
+    total = 0
+    union: set[bytes] = set()
+    per_log: dict[str, int] = {}
+    for name, leaves in usable.items():
+        inside = [x for x in leaves if low <= x.second <= high]
+        per_log[name] = len(inside)
+        total += len(inside)
+        union |= {x.key for x in inside}
+    return {
+        "interval_seconds": round(high - low, 3),
+        "logs": per_log,
+        "excluded": sorted(set(samples) - set(usable)),
+        "leaves": total,
+        "distinct_entries": len(union),
+        "factor": round(total / len(union), 4) if union else None,
+    }
 
 
 def select(how_many: int) -> list[dict]:
@@ -229,24 +368,84 @@ def pair(left_name: str, left: list[Leaf], right_name: str, right: list[Leaf]) -
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Measure CT fleet duplication")
-    parser.add_argument("--entries", type=int, default=1200, help="tail size per log")
+    parser.add_argument(
+        "--entries", type=int, default=1200, help="tail size, or the cap in --window mode"
+    )
     parser.add_argument("--logs", type=int, default=DEFAULT_LOGS, help="how many logs to compare")
+    parser.add_argument(
+        "--window",
+        type=float,
+        default=0.0,
+        help="seconds of issuance to compare, seeked by timestamp; 0 tails each log instead",
+    )
+    parser.add_argument(
+        "--lag",
+        type=float,
+        default=120.0,
+        help="seconds before now to start the window (window mode)",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=3,
+        help="concurrent logs (four is one too many for TrustAsia)",
+    )
     parser.add_argument("--json", type=pathlib.Path, default=None, help="also write this JSON")
     args = parser.parse_args()
 
     logs = select(args.logs)
+    width = int(args.window * 1000)
+    target = 0
+    if args.window:
+        # Where is "now" for the fleet? Ask the logs. Their signed timestamps are the only present that
+        # matters here, and a host clock ahead of them aims every seek into the future - which returns empty
+        # windows for every log and looks exactly like an absence.
+        with ThreadPoolExecutor(max_workers=args.workers) as pool:
+            heads = list(pool.map(lambda item: head_stamp(item["url"], Counter()), logs))
+        probes = {
+            log["description"]: stamp
+            for log, (_head, stamp) in zip(logs, heads, strict=True)
+            if stamp
+        }
+        if len(probes) < 2:
+            print("cannot place a window: fewer than two logs answered with a head timestamp")
+            return 1
+        # Anchor on the median head, not the oldest. The first run of this mode anchored on the oldest head and
+        # landed the window in September 2025 - over a year in the past - because one usable log's newest leaf is
+        # 414 days old, and three of the eight sampled logs reported NO DATA for the simpler reason that they had
+        # not been opened yet. The median keeps the window in the present for the logs that matter; a log whose
+        # head precedes it reports NO DATA, which is the truth about that log rather than a hole in the window.
+        ordered_stamps = sorted(probes.values())
+        anchor = ordered_stamps[len(ordered_stamps) // 2]
+        oldest, newest = ordered_stamps[0], ordered_stamps[-1]
+        target = anchor - int(args.lag * 1000)
+        moment = datetime.datetime.fromtimestamp(target / 1000, datetime.UTC)
+        print(
+            f"log heads span {(newest - oldest) / 1000:.0f}s oldest-to-newest "
+            f"({(newest - anchor) / 1000:.0f}s to the median); this host clock is "
+            f"{(int(time.time() * 1000) - newest) / 1000:+.0f}s from the newest"
+        )
+        print(
+            f"window: {args.window:g}s from {moment.isoformat(timespec='seconds')} "
+            f"(median head minus {args.lag:g}s)"
+        )
+    else:
+        print("tailing each log: pairs overlap only by luck, which is what --window is for")
     print("sampling: " + ", ".join(f"{x['operator']}/{x['description']}" for x in logs))
 
-    def fetch(log: dict) -> tuple[dict, list[Leaf], int, int, Counter]:
+    def sample_one(log: dict) -> tuple[dict, list[Leaf], int, int, Counter]:
         stats: Counter = Counter()
-        leaves, served, requests = tail(log["url"], args.entries, stats)
+        if args.window:
+            leaves, served, requests = window(log["url"], target, width, args.entries, stats)
+        else:
+            leaves, served, requests = tail(log["url"], args.entries, stats)
         return log, leaves, served, requests, stats
 
     # Concurrent on purpose. Sequential sampling made each busy log's tail land up to a minute after a quiet
     # one's, which emptied the common interval for most pairs and turned the matrix into blanks - an artifact of
     # this tool's own pacing, not a fact about the fleet.
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        fetched = list(pool.map(fetch, logs))
+    with ThreadPoolExecutor(max_workers=args.workers) as pool:
+        fetched = list(pool.map(sample_one, logs))
 
     samples: dict[str, list[Leaf]] = {}
     rows: list[dict] = []
@@ -292,7 +491,25 @@ def main() -> int:
                 f"{result.left:>5}/{result.right:>5} {share:<26} [{result.verdict}]"
             )
 
-    payload = {"logs": rows, "pairs": pairs, "min_pair_sample": MIN_PAIR_SAMPLE}
+    aggregate = fleet_factor(samples)
+    if aggregate:
+        print(
+            f"\nfleet across the {aggregate['interval_seconds']}s every participating log covers:"
+            f"\n  leaves={aggregate['leaves']} distinct entries={aggregate['distinct_entries']}"
+            f" -> deduplication factor {aggregate['factor']}x"
+        )
+        print(f"  participating: {', '.join(f'{k} ({v})' for k, v in aggregate['logs'].items())}")
+        if aggregate["excluded"]:
+            print(f"  sat out (too few entries in the window): {', '.join(aggregate['excluded'])}")
+    else:
+        print("\nfleet factor: no interval is covered by two or more logs with a usable sample")
+
+    payload = {
+        "logs": rows,
+        "pairs": pairs,
+        "fleet": aggregate,
+        "min_pair_sample": MIN_PAIR_SAMPLE,
+    }
     if args.json:
         args.json.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         print(f"\nwrote {args.json}")
