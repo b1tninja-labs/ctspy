@@ -115,14 +115,20 @@ verifying, so the five accepts are not a formality.
 
 Two deployment details the sweep produced:
 
-- **`get-entries` page size is an operator choice, not a protocol constant.** Measured 2026-11-05 by asking one
-  log per operator for 4,096 entries in a single request: **Google and TrustAsia return 32; Cloudflare, DigiCert
-  and Sectigo return 256.** One observation per operator, so these are *observed* caps rather than proven maxima.
-  RFC 6962 section 4.3 permits returning fewer than requested, and a client that assumes it received all 41 it
-  asked for computes the root of a 32-entry tree and reports it as the root of 41 - wrong in the direction that
-  looks entirely plausible. `fetch_leaves` observes the actual page size and asserts the count, which is why this
-  heterogeneity costs correctness nothing and request counts everything: a walk sized on Google's 32 overstates a
-  Cloudflare log eightfold.
+- **`get-entries` page size is not a per-operator constant - it is a byte budget, and it moves.** Measured twice on
+  2026-11-05 by `tools/page_caps.py`, which asks each of the 23 usable logs for 16, 64, 256 and 1024 entries from
+  one offset and records what actually came back. The served count at the largest ask spans **1 to 250** across the
+  fleet, and the spread *within* an operator is wider than the difference *between* operators that an earlier
+  version of this document claimed: Google served 6 (Argon2026h2), 22 (Xenon2027h1), 30 (Argon2027h1) and 32
+  (Xenon2026h2); DigiCert served 1 (Sphinx2027h2) up to 222 (Wyvern2026h2). Asking the same log again ten minutes
+  later gave 6 where it had given 8. **What is stable is the response size per entry: 4,528 to 8,200 bytes, median
+  about 6.5 KB**, because `extra_data` carries the issuer chain - so the limit being enforced is on bytes, and any
+  entries-per-response number describes that day's entries rather than the operator's configuration. Two
+  consequences. A client must observe the page size on every response, which is what `fetch_leaves` does; the
+  heterogeneity therefore costs correctness nothing. And a walk cannot be sized on a remembered page size: the
+  request count is ~1.6B at today's sustained pages against ~0.54B at the earlier sample, while the *volume* holds
+  at ~207 TB - the quantity actually worth planning against. TrustAsia answered `429` on two of its four steps at
+  four-way concurrency, which is a separate constraint and not a page size.
 - **The live head advanced during the sweep** (3,024,290,326 to 3,024,290,413), which the fixture
   records rather than hides. It does not weaken anything: `second` was named explicitly in every
   request, and a proof for the newer tree could not have folded onto the older signed root.
