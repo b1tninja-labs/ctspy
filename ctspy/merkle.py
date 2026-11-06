@@ -28,6 +28,8 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Sequence
 
+from .errors import CtspyError
+
 __all__ = [
     "HASH_SIZE",
     "Path",
@@ -49,7 +51,7 @@ Hash = bytes
 Path = tuple[Hash, ...]
 
 
-class ProofFormatError(ValueError):
+class ProofFormatError(CtspyError, ValueError):
     """A proof is structurally impossible, as opposed to merely failing to verify."""
 
 

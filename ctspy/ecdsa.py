@@ -28,10 +28,12 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 
+from .errors import CtspyError
+
 __all__ = ["P256", "Curve", "EcdsaKey", "SignatureDecodeError", "verify_sha256"]
 
 
-class SignatureDecodeError(ValueError):
+class SignatureDecodeError(CtspyError, ValueError):
     """A signature or public key could not be decoded. Never a verification failure."""
 
 

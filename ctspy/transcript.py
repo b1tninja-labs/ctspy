@@ -26,6 +26,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import IntEnum
 
+from .errors import CtspyError
+
 __all__ = [
     "Extension",
     "HashAlgorithm",
@@ -40,8 +42,12 @@ __all__ = [
 MAX_EXTENSIONS = 65535
 
 
-class TranscriptError(ValueError):
-    """The bytes are not the structure they claimed to be."""
+class TranscriptError(CtspyError, ValueError):
+    """The bytes are not the structure they claimed to be.
+
+    Also a `ValueError`, because callers that already treat malformed input as a value problem keep working;
+    a caller that wants everything ctspy raises catches `CtspyError`, which is what `certledger` does.
+    """
 
 
 class HashAlgorithm(IntEnum):

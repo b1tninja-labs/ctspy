@@ -78,3 +78,25 @@ def roadmap_status(label: str) -> str | None:
         if len(cells) >= 3 and cells[0] == label:
             return cells[2].strip("`")
     return None
+
+
+def test_every_error_this_package_raises_is_a_ctspyerror() -> None:
+    """One `except CtspyError` must catch everything this package rejects, and nothing else.
+
+    The docstring in `errors.py` has claimed `CtspyError` is the base for all of it since the first draft,
+    while `TranscriptError`, `ProofFormatError` and `SignatureDecodeError` subclassed `ValueError` instead.
+    `certledger` wrote `except CtspyError` around entry parsing, believed the claim, and let a malformed leaf
+    escape - which is how a consumer discovers that an error hierarchy is documentation rather than code.
+
+    The structural errors stay `ValueError`s too, so anything already catching bad bytes keeps catching
+    them. `VerificationError` is deliberately not one: a log that signed something bogus is not a caller that
+    passed a bad argument, and a handler written for the second must not swallow the first.
+    """
+    from ctspy import ecdsa, errors, merkle, transcript
+
+    structural = (transcript.TranscriptError, merkle.ProofFormatError, ecdsa.SignatureDecodeError)
+    for error in (*structural, errors.VerificationError):
+        assert issubclass(error, errors.CtspyError), error
+    for error in structural:
+        assert issubclass(error, ValueError), error
+    assert not issubclass(errors.VerificationError, ValueError)
