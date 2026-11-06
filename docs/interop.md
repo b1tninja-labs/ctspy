@@ -115,10 +115,14 @@ verifying, so the five accepts are not a formality.
 
 Two deployment details the sweep produced:
 
-- **`get-entries` is capped at 32 entries per response** by Google's servers. RFC 6962 section 4.3
-  permits returning fewer than requested, and a client that assumes it received all 41 it asked for
-  computes the root of a 32-entry tree and reports it as the root of 41 - wrong in the direction that
-  looks entirely plausible. `fetch_leaves` observes the actual page size and asserts the count.
+- **`get-entries` page size is an operator choice, not a protocol constant.** Measured 2026-11-05 by asking one
+  log per operator for 4,096 entries in a single request: **Google and TrustAsia return 32; Cloudflare, DigiCert
+  and Sectigo return 256.** One observation per operator, so these are *observed* caps rather than proven maxima.
+  RFC 6962 section 4.3 permits returning fewer than requested, and a client that assumes it received all 41 it
+  asked for computes the root of a 32-entry tree and reports it as the root of 41 - wrong in the direction that
+  looks entirely plausible. `fetch_leaves` observes the actual page size and asserts the count, which is why this
+  heterogeneity costs correctness nothing and request counts everything: a walk sized on Google's 32 overstates a
+  Cloudflare log eightfold.
 - **The live head advanced during the sweep** (3,024,290,326 to 3,024,290,413), which the fixture
   records rather than hides. It does not weaken anything: `second` was named explicitly in every
   request, and a proof for the newer tree could not have folded onto the older signed root.
