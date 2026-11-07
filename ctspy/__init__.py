@@ -12,6 +12,7 @@ from . import (
     ecdsa,
     entry,
     errors,
+    loglist,
     merkle,
     monitor,
     policy,
@@ -24,6 +25,7 @@ from .client import add_chain
 from .ecdsa import EcdsaKey
 from .entry import MerkleTreeLeaf
 from .errors import CtspyError, VerificationError
+from .loglist import LogListFormatError
 from .merkle import verify_consistency, verify_inclusion
 from .monitor import watch
 from .policy import acceptable
@@ -38,6 +40,7 @@ __all__ = [
     "CtspyError",
     "EcdsaKey",
     "Extension",
+    "LogListFormatError",
     "MerkleTreeLeaf",
     "Reader",
     "SignedCertificateTimestamp",
@@ -56,6 +59,7 @@ __all__ = [
     "entry",
     "errors",
     "fetch_tile",
+    "loglist",
     "merkle",
     "monitor",
     "parse",

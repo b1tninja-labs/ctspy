@@ -324,3 +324,39 @@ no caller that takes both from one verified head can be misled. Callers that tak
 can be, which is why `verify_consistency`'s docstring says so and `HeadStore` cannot be given a size
 without its bound root.
 
+## A `readonly` log serving past the final tree size Chrome published for it (2026-11-06)
+
+Chrome's log list publishes a `final_tree_head` for every `ReadOnly` log, and `log_states.md` states the
+expectation: *"When a log becomes `ReadOnly`, the final tree size is published to the Google-hosted CT Log List to
+signal that this log should not grow past this point. To help ensure this behavior, CT monitors should continue
+monitoring `ReadOnly` logs until they become `Retired` or `Rejected`."*
+
+Measured against both `readonly` logs at list v96.2 on 2026-11-06:
+
+| Log | Published final tree size | `get-sth` tree size | Delta | Freshest STH signed |
+| --- | --- | --- | --- | --- |
+| Sectigo Mammoth2026h2 | 57,634,084 | 57,634,084 | 0 | 2026-11-06T22:24:33Z |
+| Sectigo Sabre2026h2 | 68,732,791 | **68,732,793** | **+2** | 2026-11-06T22:23:24Z |
+
+`tools/duplication_probe.py --era` plus a direct `get-entries` over the two overflowing indices show the extra
+entries are real: indices 68,732,791 and 68,732,792, 845 octets each, carrying leaf timestamps
+**2025-11-11T02:23:18Z** and **2025-11-11T05:01:07Z** — about 54 days after the list's `readonly` timestamp of
+2025-09-18T17:20:00Z for that log. Both logs also keep signing fresh STHs over trees that gained nothing (or, for
+Sabre, gained two) in the past year, so a head *timestamp* advances while the tree does not.
+
+What an implementation should take from this, without claiming more than the evidence supports:
+
+- **Do not treat the published size as the end of the walk.** A monitor that stops at `final_tree_head.tree_size`
+  silently drops two entries. Walk to the head the log signs, and record any disagreement with the seal.
+- **An inclusion proof against the sealed root cannot cover those two entries.** They are in the tree the log signs
+  today and not in the tree hash the list publishes, so a client checking against the published root rejects them.
+  That much is observable; *why* is not. Either the log issued SCTs after it should have stopped, or the list's
+  timestamp records when Chrome noted the transition rather than when it took effect — and Mammoth2026h2's last
+  leaf sitting 1h46m before the same stamp points the second way. The two explanations have different owners, and
+  naming one without evidence would be the worse error.
+- **Key staleness on `tree_size`, never on the STH timestamp.** Both closed logs look healthy to an alarm built on
+  the latter.
+
+Reproduce with `python tools/duplication_probe.py --list all --state readonly --era`, then a `get-entries` spanning
+the published size.
+

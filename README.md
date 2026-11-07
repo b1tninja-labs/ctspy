@@ -46,6 +46,10 @@ What works today, as of 2026-11-05 - the list above is the plan, this is the cod
   consistency proofs tying roots this library computed to a signed 3-billion-entry tree, six SCT
   signatures from six logs across four operators, and the precert reconstruction checked against entries
   three independent implementations serve. See [docs/interop.md](docs/interop.md).
+- Chrome's signed CT log list, verified offline: `loglist` checks the published RSASSA-PKCS1-v1_5/SHA-256
+  signature with a pure-Python RSA public operation, so a journaled snapshot stays checkable without trusting the
+  transport. It verifies a document and says nothing about whether a certificate is compliant - deciding that is
+  the platform's job, see "What it does not do".
 
 Not built: v2 `TransItem` and v2 SCTs, tile fetching, submission, monitoring, and policy - partly
 because RFC 9162's v2 has no deployed log to verify against yet.
@@ -77,6 +81,7 @@ document, which is the honest grain size for a plan. See [docs/rfc-map.md](docs/
 | `client` | add chain, add prechain, get sth and the submission endpoints (RFC 9162) |
 | `monitor` | stream reading, diffing and alerting on unexpected issuance |
 | `policy` | which logs and which artifacts a deployment will accept |
+| `loglist` | verifying Chrome's signed log list (not RFC 9162 - a platform mechanism a monitor has to check) |
 
 ## What it does not do
 

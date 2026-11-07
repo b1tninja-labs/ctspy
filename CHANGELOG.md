@@ -4,7 +4,18 @@ The format follows Keep a Changelog, and this project adheres to Semantic Versio
 
 ## Unreleased
 
-Nothing yet. This repository is a shell: the public surface exists as typed stubs that raise
+### Added
+
+- `ctspy.loglist`: verifies Chrome's signed CT log list (RSASSA-PKCS1-v1_5 with SHA-256) using only the standard
+  library, parses the RSA key out of its armoured SPKI, and exposes the key's DER fingerprint for pinning. The
+  signature is over the exact octets served - newline included - so snapshots must be written in binary; tests
+  cover the captured document from `tests/fixtures/loglist/`, the byte-level and newline-level tamper cases,
+  refusal of non-RSA and malformed keys, and agreement with OpenSSL on signatures it generates.
+- `tools/log_list_journal.py`: snapshots both lists, both signatures and the key into a date-stamped directory,
+  verifies on write, re-verifies offline, refuses to rewrite an existing day, and takes `--expect-key-sha256` for
+  an out-of-band key pin.
+
+Otherwise unchanged: parts of the public surface remain typed stubs that raise
 `NotImplementedError`, and [ROADMAP.md](ROADMAP.md) lists what has to happen first.
 
 ## 0.0.0 - 2026-11-05
