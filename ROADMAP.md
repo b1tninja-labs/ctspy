@@ -118,3 +118,12 @@ the code existing. Coverage in `pyproject.toml` ratchets in the same commit.
       roots this library computed itself, 15 SCTs from live certificates)
 - [ ] `tools/check_dist.py` proves the wheel ships the fixtures the README promises
 - [ ] version 0.1.0 tagged, trusted publisher configured, README badges uncommented
+
+## Board projection
+
+`py sdk-forge/sync_roadmap.py --project ctspy --check` projects §1 onto GitHub issues, collected on Project
+V2 **#2 "Protocol SDK portfolio"**. Read through the hosted GitHub MCP server on 2026-11-07: **4 items**, all
+open, all `status:unimplemented`. The matrix holds 13 rows: 6 `[ok]` and 3 `[no]` are deliberately not filed,
+which is why four rows out of thirteen appear on the board.
+
+A dated snapshot, not a live count. The board is the live view; this file is the source of truth.
