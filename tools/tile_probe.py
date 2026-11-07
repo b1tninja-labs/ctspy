@@ -49,14 +49,16 @@ from typing import Any
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-from ctspy.entry import TimestampedEntry, X509Entry
+from ctspy.entry import PrecertEntry, TimestampedEntry, X509Entry
 from ctspy.transcript import Reader
 
 DEFAULT_LIST = (
     pathlib.Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "loglist" / "log_list.json"
 )
 USER_AGENT = "ctspy-tile-probe/0.1 (static-CT measurement; read-only GET)"
-MAX_TILE = 8 * 1024 * 1024  # a tile we cannot hold is a fact we report, not a crash
+MAX_TILE = (
+    64 * 1024 * 1024
+)  # a full tile is ~8k entries; refusing to hold one would hide the number
 TILE_LEAF_KIND = 0x08  # TranscriptItem kind for a TileLeaf, confirmed from the first byte pair
 
 
@@ -68,23 +70,49 @@ def _iso(ms: int) -> str:
     return datetime.datetime.fromtimestamp(ms / 1000, datetime.UTC).isoformat(timespec="seconds")
 
 
+HOST_SUBSTITUTIONS: set[str] = set()  # URLs only reachable through the other Google host form
+
+
+def _expand(url: str) -> list[str]:
+    """Every host form a Google-hosted monitoring prefix can be reached by, most-likely first.
+
+    Observed against production: `tile/data/1000` is 404 through the `monitoring_url` Chrome
+    publishes for ParcelYard2026h2 (`https://storage.googleapis.com/<bucket>`) and 200 through the
+    bucket's own load-balancer hostname (`https://<bucket>`). Without the retry, a whole log reads
+    as though it refuses to serve its tiles, which is false; with it, the substitution is recorded
+    so a plan can see that the published prefix is not the only way in.
+    """
+    prefix = "https://storage.googleapis.com/"
+    if url.startswith(prefix):
+        rest = url[len(prefix) :]
+        return [url, f"https://{rest}"]
+    return [url]
+
+
 def get(url: str) -> tuple[bytes, str | None]:
     """GET with `Accept-Encoding: identity`, so the bytes we divide by are the bytes stored."""
-    request = urllib.request.Request(  # noqa: S310
-        url, headers={"User-Agent": USER_AGENT, "Accept-Encoding": "identity"}
-    )
-    try:
-        with urllib.request.urlopen(  # noqa: S310
-            request, timeout=60.0, context=ssl.create_default_context()
-        ) as response:
-            raw = response.read(MAX_TILE + 1)
-    except urllib.error.HTTPError as exc:
-        return b"", f"HTTP {exc.code}"
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        return b"", f"{type(exc).__name__}: {str(exc)[:120]}"
-    if len(raw) > MAX_TILE:
-        return raw, f"more than {MAX_TILE} octets"
-    return raw, None
+    last = "no candidate"
+    for candidate in _expand(url):
+        request = urllib.request.Request(  # noqa: S310
+            candidate, headers={"User-Agent": USER_AGENT, "Accept-Encoding": "identity"}
+        )
+        try:
+            with urllib.request.urlopen(  # noqa: S310
+                request, timeout=60.0, context=ssl.create_default_context()
+            ) as response:
+                raw = response.read(MAX_TILE + 1)
+        except urllib.error.HTTPError as exc:
+            last = f"HTTP {exc.code}"
+            continue
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            last = f"{type(exc).__name__}: {str(exc)[:120]}"
+            continue
+        if candidate != url:
+            HOST_SUBSTITUTIONS.add(candidate)
+        if len(raw) > MAX_TILE:
+            return raw, f"more than {MAX_TILE} octets"
+        return raw, None
+    return b"", last
 
 
 def parse_checkpoint(raw: bytes) -> dict[str, Any]:
@@ -123,50 +151,43 @@ def tile_entry_key(ts_entry: TimestampedEntry) -> tuple[bytes, str]:
 
 
 def iter_tile_leaves(data: bytes, notes: list[str]) -> list[dict[str, Any]]:
-    """Parse a data tile as TranscriptItem-framed TileLeaf entries, stopping at the first doubt.
+    """Parse a data tile as a bare sequence of TileLeaf structures, stopping at the first doubt.
 
-    TileLeaf is a `TimestampedEntry`, then the submitted Precertificate when the entry is a precert,
-    then a vector of 32-byte issuer fingerprints; each entry is framed by `0x06 <kind>`. Parsing
-    stops rather than resynchronising, because a tile whose third entry will not parse is a finding
-    about our reading of the format, and guessing past it would silently truncate the sample.
+    TileLeaf is a `TimestampedEntry`, then the submitted Precertificate *only* when the entry is a
+    precert, then a vector of 32-byte issuer fingerprints. There is no TranscriptItem framing and no
+    per-entry length: the first byte of a real tile is 0x00, the high byte of a uint64 timestamp,
+    where `0x06 0x08` would have been. Entries follow one another and the entry type inside
+    `TimestampedEntry` is what decides which shape comes next. Parsing stops rather than
+    resynchronises, because a tile whose third entry will not parse is a finding about our reading
+    of the format, and guessing past it would silently truncate the sample.
     """
     entries: list[dict[str, Any]] = []
-    cursor, total = 0, len(data)
-    while cursor < total:
-        if total - cursor < 2:
-            notes.append(
-                f"tile ends with {total - cursor} stray byte(s) after {len(entries)} entries"
-            )
-            break
-        if data[cursor] != 0x06:
-            notes.append(
-                f"entry {len(entries)} at offset {cursor} starts {data[cursor]:#04x}, not 0x06: the "
-                "framing assumption is wrong and nothing past here is parsed"
-            )
-            break
-        kind = data[cursor + 1]
-        if kind != TILE_LEAF_KIND:
-            notes.append(
-                f"entry {len(entries)} has TranscriptItem kind {kind:#04x}, not 0x08; stopped"
-            )
-            break
-        reader = Reader(data[cursor + 2 :], what="TileLeaf")
+    total = len(data)
+    pos = 0
+    while pos < total:
+        reader = Reader(data[pos:], what="data tile")
         try:
             ts_entry = TimestampedEntry.parse(reader)
-            pre_certificate = reader.opaque(length_bytes=3, minimum=0, maximum=16777215)
+            pre_certificate = (
+                reader.opaque(length_bytes=3, minimum=1, maximum=16777215)
+                if isinstance(ts_entry.entry, PrecertEntry)
+                else b""
+            )
             chain = reader.opaque(length_bytes=2, minimum=0, maximum=65535)
-            consumed = reader.tell()
+            consumed = total - pos - reader.remaining()
         except Exception as exc:
             notes.append(
-                f"entry {len(entries)} failed to parse ({type(exc).__name__}: {exc}); stopped"
+                f"entry {len(entries)} at offset {pos} failed to parse "
+                f"({type(exc).__name__}: {str(exc)[:120]}); stopped"
             )
             break
         if len(chain) % 32:
             notes.append(
-                f"entry {len(entries)} has a {len(chain)}-byte chain, not a whole number of fingerprints"
+                f"entry {len(entries)} has a {len(chain)}-byte chain, not a whole number of "
+                "32-byte fingerprints; stopped"
             )
             break
-        cursor += 2 + consumed
+        pos += consumed
         key, entry_kind = tile_entry_key(ts_entry)
         entries.append(
             {
@@ -255,6 +276,111 @@ def measure(client_url: str, index: int, notes: list[str]) -> dict[str, Any] | N
     }
 
 
+def tile_status(client_url: str, index: int) -> str:
+    """Does this data tile exist? Asked with a one-byte Range so the answer costs nothing.
+
+    Existence is probed rather than assumed because the answer is itself a finding: a log that
+    returns 404 for its own oldest tile cannot be replayed from the beginning by anyone.
+    """
+    last = "no candidate"
+    for candidate in _expand(f"{client_url}/tile/data/{index}"):
+        request = urllib.request.Request(  # noqa: S310
+            candidate,
+            headers={"User-Agent": USER_AGENT, "Accept-Encoding": "identity", "Range": "bytes=0-0"},
+        )
+        try:
+            with urllib.request.urlopen(  # noqa: S310
+                request, timeout=30.0, context=ssl.create_default_context()
+            ) as response:
+                if response.status in (200, 206):
+                    if candidate != f"{client_url}/tile/data/{index}":
+                        HOST_SUBSTITUTIONS.add(candidate)
+                    return "present"
+                return f"HTTP {response.status}"
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                last = "absent"
+                continue
+            last = f"HTTP {exc.code}"
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            last = f"{type(exc).__name__}: {str(exc)[:80]}"
+    return last
+
+
+def derive_entries_per_tile(
+    client_url: str, tree_size: int, notes: list[str]
+) -> dict[str, Any] | None:
+    """Solve for the entries-per-tile constant from the tail of the tree, with no assumed number.
+
+    The spec leaves the tile width to the implementation, and tile 0 is not always served, so the
+    constant comes from arithmetic instead. Let `T` be the highest tile index the log serves and
+    `C` the entries in it. That tile is the last one, so `T * E + C == tree_size`, hence
+    `E = (tree_size - C) / T` exactly. Requiring the division to be exact and `E >= C` is what
+    makes this a derivation and not a guess: a wrong `T` (an interior tile, which is full) leaves a
+    remainder, and the function then refuses instead of reporting a plausible constant.
+    """
+    top = max(1, tree_size // 256)
+    status = tile_status(client_url, top)
+    while status == "present" and top < tree_size:
+        top *= 4
+        status = tile_status(client_url, top)
+    if status not in ("absent", "present"):
+        notes.append(f"tile probe at {top} returned {status}; cannot bound the search")
+        return None
+    high = top if status == "absent" else top - 1
+    if tile_status(client_url, 0) == "absent":
+        notes.append(
+            "tile/data/0 is absent: presence is not prefix-monotone, so the highest tile found is "
+            "the tree's end only if the gap is confined to the low end. The previous-tile check "
+            "below is what this derivation is actually resting on."
+        )
+    best = -1
+    lo, hi = 0, high
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        if tile_status(client_url, mid) == "present":
+            best = mid
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    if best < 1:
+        notes.append(f"highest served tile is {best}; nothing to derive from")
+        return None
+    tail = measure(client_url, best, notes)
+    if tail is None:
+        return None
+    count = tail["entries"]
+    remainder = (tree_size - count) % best
+    derived = (tree_size - count) // best
+    out: dict[str, Any] = {
+        "highest_tile": best,
+        "tail_entries": count,
+        "tail_full": remainder == 0 and derived == count,
+        "derived_entries_per_tile": None,
+        "arithmetic": f"({tree_size} - {count}) / {best} = {derived} remainder {remainder}",
+        "tail": tail,
+    }
+    if remainder != 0 or derived < count or (tree_size - 1) // derived != best:
+        notes.append(
+            f"tile {best} holds {count} entries, and ({tree_size} - {count}) / {best} = {derived} "
+            f"remainder {remainder} does not put tile {best} at the end of the tree: the "
+            "derivation is inconsistent, so no constant is claimed"
+        )
+        return out
+    previous = measure(client_url, best - 1, notes)
+    out["previous_tile"] = previous
+    if previous is None or previous["entries"] != derived:
+        notes.append(
+            f"tile {best - 1} holds {None if previous is None else previous['entries']} entries, "
+            f"not the {derived} a full tile must hold: the constant is falsified by the tile "
+            f"before the last one, and only the tail measurement is claimed"
+        )
+        return out
+    out["derived_entries_per_tile"] = derived
+    out["confirmed_by_previous_tile"] = True
+    return out
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -307,38 +433,39 @@ def main() -> int:
     if "tree_size" not in checkpoint:
         return 1
 
-    first = measure(monitoring, 0, notes)
-    if first is None:
-        print("tile/data/0 did not parse; nothing downstream is claimed")
+    tile0 = tile_status(monitoring, 0)
+    print(f"  tile/data/0: {tile0}")
+    derived: dict[str, Any] | None = None
+    if args.tile is not None:
+        recent = measure(monitoring, args.tile, notes)
+    else:
+        derived = derive_entries_per_tile(monitoring, checkpoint["tree_size"], notes)
+        recent = None if derived is None else (derived.get("tail") or derived.get("previous_tile"))
+    if recent is None:
+        print("no data tile parsed; nothing downstream is claimed")
         for note in notes:
             print(f"  note: {note}")
         return 1
-    per_tile = first["entries"]
-    print(
-        f"  tile 0: {first['octets']} octets / {per_tile} entries = {first['bytes_per_entry']} "
-        f"bytes per entry; our gzip-9 {first['our_gzip9_ratio']}x"
-    )
-    recent = first
-    if args.tile is not None:
-        recent = measure(monitoring, args.tile, notes) or first
-    elif checkpoint["tree_size"] >= 2 * per_tile:
-        fetched = measure(monitoring, checkpoint["tree_size"] // per_tile - 1, notes)
-        if fetched:
-            recent = fetched
-    if recent is not first:
+    full = None if derived is None else derived.get("previous_tile")
+    if full is not None:
         print(
-            f"  tile {recent['index']}: {recent['octets']} octets / {recent['entries']} entries = "
-            f"{recent['bytes_per_entry']} bytes per entry; our gzip-9 {recent['our_gzip9_ratio']}x"
+            f"  tile {full['index']}, a full tile of {derived['derived_entries_per_tile']} entries: "
+            f"{full['octets']} octets = {full['bytes_per_entry']} bytes per entry; our gzip-9 "
+            f"{full['our_gzip9_ratio']}x"
         )
+    print(
+        f"  tile {recent['index']}: {recent['octets']} octets / {recent['entries']} entries = "
+        f"{recent['bytes_per_entry']} bytes per entry; our gzip-9 {recent['our_gzip9_ratio']}x"
+    )
     print(
         f"  window {recent['first_timestamp_iso']} .. {recent['last_timestamp_iso']}; kinds "
         f"{recent['kinds']}; {recent['distinct_keys']} distinct keys of {recent['entries']}; "
         f"{recent['issuer_fingerprints']} issuer fingerprints"
     )
-    if recent["entries"] < per_tile:
+    if full is None:
         notes.append(
-            f"tile {recent['index']} holds {recent['entries']} entries against {per_tile} in tile 0: "
-            "a short tile, so its byte figures are for that tile alone"
+            "no full tile was confirmed, so the bytes-per-entry figure above describes one tile of "
+            f"{recent['entries']} entries and is not yet a per-entry cost for the log"
         )
     for note in notes:
         print(f"  note: {note}")
@@ -348,9 +475,9 @@ def main() -> int:
         "retrieved_at": _now(),
         "log": chosen,
         "checkpoint": checkpoint,
-        "entries_per_tile_observed": per_tile,
-        "tile_0": first,
-        "tile_recent": recent,
+        "tile_0_status": tile0,
+        "derivation": derived,
+        "tile_measured": recent,
         "checkpoint_verified": False,
         "notes": notes,
     }
