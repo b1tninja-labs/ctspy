@@ -299,7 +299,9 @@ def tree_sweep(out: pathlib.Path, origin: str) -> None:
     proofs: dict[str, dict] = {}
     for count in TREE_SIZES:
         mine = merkle.tree_hash(leaves[:count])
-        assert mine == merkle.tree_hash_recursive(leaves[:count]), f"two MTHs disagree at {count}"
+        if mine != merkle.tree_hash_recursive(leaves[:count]):
+            # Not an assert: `python -O` would strip the check and let a wrong MTH into the evidence.
+            raise RuntimeError(f"two MTHs disagree at {count}")
         answer = get_json(f"{origin}/ct/v1/get-sth-consistency?first={count}&second={size}")
         nodes, field_name = consistency_nodes(answer)
         audit = tuple(base64.b64decode(node) for node in nodes)

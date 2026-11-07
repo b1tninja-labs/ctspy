@@ -20,6 +20,7 @@ import hashlib
 import json
 import pathlib
 from dataclasses import replace
+from typing import Any
 
 import pytest
 from cryptography.hazmat.primitives import hashes, serialization
@@ -98,8 +99,10 @@ def test_a_single_change_invalidates_a_production_sth(field: str) -> None:
     replacement = (
         current + 1 if isinstance(current, int) else bytes([current[0] ^ 0x01]) + current[1:]
     )
+    # Typed as Any: the parametrized field is int or bytes, which mypy cannot match per field.
+    changes: dict[str, Any] = {field: replacement}
     with pytest.raises(VerificationError):
-        verify(replace(sth, **{field: replacement}), key_of(XENON))
+        verify(replace(sth, **changes), key_of(XENON))
 
 
 def test_the_log_id_is_the_sha256_of_the_published_key():

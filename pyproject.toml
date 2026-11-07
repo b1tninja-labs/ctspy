@@ -2,7 +2,7 @@
 # Declared explicitly rather than relying on pip's legacy setuptools fallback: with no
 # build-system table pip injects an unpinned setuptools environment, so a build is
 # neither reproducible nor hermetic.
-requires = ["hatchling>1.25"]
+requires = ["hatchling>=1.25"]
 build-backend = "hatchling.build"
 
 [project]
@@ -13,7 +13,7 @@ dynamic = ["version"]
 description = "Certificate Transparency to RFC 9162: signed certificate timestamps, Merkle inclusion and consistency proofs, log storage tiles, and monitoring"
 readme = "README.md"
 license = "Apache-2.0"
-requires-python = ">3.12"
+requires-python = ">=3.12"
 authors = [{ name = "Justin Capella" }]
 keywords = ["certificate-transparency", "ct", "sct", "merkle", "logs", "rfc9162", "monitoring"]
 classifiers = [
@@ -103,7 +103,6 @@ line-length = 100
 select = ["E", "W", "F", "I", "B", "N", "UP", "SIM", "C4", "PT", "RUF", "S", "RET", "ARG"]
 ignore = [
   "E501",  # line length is the formatter's job
-  "S101",  # assert belongs in tests, and this repo has a written policy on it
 ]
 
 [tool.ruff.lint.per-file-ignores]
