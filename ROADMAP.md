@@ -16,21 +16,27 @@ drift apart within one release, and the document becomes useless exactly when it
 
 ## 1. Obligations
 
-| Obligation | Spec | Status | Where |
-|---|---|---|---|
-| `sct.parse()` | RFC 6962 section 3.2 (v1, deployed; obsoleted by RFC 9162, whose section 4.8 v2 shape this is not) | `[ok]` | `tests/test_scts.py::test_the_wire_format_offsets_are_what_section_32_declares` |
-| `sct.verify()` | RFC 6962 section 3.2 (v1); RFC 9162 obsoletes the format and v2 is unimplemented | `[ok]` | `tests/test_production_sct_signatures.py::test_a_real_log_signed_this_transcript` |
-| `sth.verify()` | RFC 9162 | `[ok]` | `tests/test_sth.py::test_production_sths_verify_against_their_published_keys` |
-| `merkle.verify_inclusion()` | RFC 9162 | `[ok]` | `tests/test_merkle.py::test_the_published_inclusion_proofs_verify` |
-| `merkle.verify_consistency()` | RFC 9162 | `[ok]` | `tests/test_merkle.py::test_the_published_consistency_proofs_verify` |
-| `entry.parse_extra_data()` | RFC 6962 sections 3.1, 3.2, 4.6 (v1, deployed) | `[ok]` | `tests/test_production_extra_data.py::test_rereading_an_entry_rebuilds_the_exact_octets_the_log_sent` |
-| `tiles.fetch_tile()` | RFC 9162 | `[ ]` | milestone M3 |
-| `client.add_chain()` | RFC 9162 | `[ ]` | milestone M4 |
-| `monitor.watch()` | RFC 9162 | `[ ]` | milestone M5 |
-| `policy.acceptable()` | design | `[ ]` | design undecided |
+| Obligation | Spec | Status | Where | Milestone |
+|---|---|---|---|---|
+| `sct.parse()` | RFC 6962 section 3.2 (v1, deployed; obsoleted by RFC 9162, whose section 4.8 v2 shape this is not) | `[ok]` | `tests/test_scts.py::test_the_wire_format_offsets_are_what_section_32_declares` | M2 |
+| `sct.verify()` | RFC 6962 section 3.2 (v1); RFC 9162 obsoletes the format and v2 is unimplemented | `[ok]` | `tests/test_production_sct_signatures.py::test_a_real_log_signed_this_transcript` | M2 |
+| `sth.verify()` | RFC 9162 section 4.10 | `[ok]` | `tests/test_sth.py::test_production_sths_verify_against_their_published_keys` | M2 |
+| `merkle.verify_inclusion()` | RFC 9162 section 2.1.3.2 | `[ok]` | `tests/test_merkle.py::test_the_published_inclusion_proofs_verify` | M1 |
+| `merkle.verify_consistency()` | RFC 9162 section 2.1.4.2 | `[ok]` | `tests/test_merkle.py::test_the_published_consistency_proofs_verify` | M1 |
+| `entry.parse_extra_data()` | RFC 6962 sections 3.1, 3.2, 4.6 (v1, deployed) | `[ok]` | `tests/test_production_extra_data.py::test_rereading_an_entry_rebuilds_the_exact_octets_the_log_sent` | M6 |
+| `tiles.fetch_tile()` | RFC 9162 | `[ ]` | `tests/test_tiles.py::test_fetch_tile` (to be written) | M3 |
+| `client.add_chain()` | RFC 9162 section 5.1 | `[ ]` | `tests/test_client.py::test_add_chain` (to be written) | M4 |
+| `monitor.watch()` | RFC 9162 section 8.2 | `[ ]` | `tests/test_monitor.py::test_watch` (to be written) | M5 |
+| `policy.acceptable()` | design | `[ ]` | `tests/test_policy.py::test_acceptable` (to be written) | - (open question, section 5) |
 
 The `Where` column used to name `tests/test_obligations.py`, a file this repository never had. That
 was the row lying about being checkable, which is worse than an honest gap.
+
+An open row's `Where` names the test that will pin it, marked `(to be written)`: none of those files
+exists yet. The `Milestone` column places each row on the section 2 ladder; `entry.parse_extra_data()`
+at M6 is a judgement (production-entry reconstruction is cross-checked against live logs), the others
+quote the ladder. Section numbers in the `Spec` column were read from RFC 9162's outline through rfclib
+on 2026-11-07.
 
 
 ## 2. Milestones
@@ -95,9 +101,6 @@ the code existing. Coverage in `pyproject.toml` ratchets in the same commit.
   321 entries both - and the other 173 match `chain[1]`. `docs/interop.md` carries the measurement and the
   consequence: an issuer graph must key on `issuer_key_hash`, because a third of `chain[0]` values are
   CT-only signing certificates that are not CAs.
-- **No log serves an inclusion proof**, so inclusion rests on the specification's worked example plus the
-  entry-block proofs in `production-tree.json`. Is that a deployment gap or a reading of section 4.5?
-  Nobody who asked got a different answer than 404.
 - **v2 has no one to interoperate with.** `TransItem`, v2 SCTs and tile fetching are specified in
   RFC 9162 and unimplemented or untested against a server here, because no v2 log is in the log list.
   Writing them first means writing code nobody has confirmed reads the same bytes.
@@ -108,6 +111,12 @@ the code existing. Coverage in `pyproject.toml` ratchets in the same commit.
   thirteen logged precert entries all reconstruct with "delete the poison extension from the stored
   precert". Those are the two shapes deployed logs emit today; whether a log exists that logs a precert
   whose TBS keeps an SCT list is unknown, and `certledger` should refuse rather than guess if it meets one.
+- **Where does `policy.acceptable()` sit?** The row is `design` with no ladder rung. Two readings: M6, as
+  part of publication, or `[no]` under the section 4 non-goal that browser log-acceptance policy belongs
+  to the platform. The row keeps its meaning until that is decided (portfolio decision D24).
+- **Which document does `tiles.fetch_tile()` cite?** The row says RFC 9162, but RFC 9162's outline has no
+  tile section (read through rfclib, 2026-11-07); the tile layout deployed logs serve is specified outside
+  the RFC series. The cell is unchanged until the citation is settled.
 
 ## 6. Publication checklist
 
@@ -121,9 +130,11 @@ the code existing. Coverage in `pyproject.toml` ratchets in the same commit.
 
 ## Board projection
 
-`py sdk-forge/sync_roadmap.py --project ctspy --check` projects §1 onto GitHub issues, collected on Project
-V2 **#2 "Protocol SDK portfolio"**. Read through the hosted GitHub MCP server on 2026-11-07: **4 items**, all
-open, all `status:unimplemented`. The matrix holds 13 rows: 6 `[ok]` and 3 `[no]` are deliberately not filed,
-which is why four rows out of thirteen appear on the board.
+`py sdk-forge/sync_roadmap.py --project ctspy --check` projects section 1 onto GitHub issues, collected on
+Project V2 **#4 "Protocol SDK portfolio"**, the only board. Read with `gh project item-list 4` on 2026-11-07:
+**7 items** from this repository, all in Backlog: 4 row issues (`tiles.fetch_tile`, `client.add_chain`,
+`monitor.watch`, `policy.acceptable`, each `status:unimplemented`) and 3 milestone issues (M3, M4, M5).
+The matrix holds 13 rows: 6 `[ok]` and 3 `[no]` are deliberately not filed, which is why four rows out of
+thirteen appear on the board.
 
 A dated snapshot, not a live count. The board is the live view; this file is the source of truth.
