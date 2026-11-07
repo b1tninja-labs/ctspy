@@ -157,32 +157,51 @@ def list_logs(
     )
     logs = []
     for operator in document.get("operators", []):
-        for log in operator.get("logs", []):
-            declared = log.get("state") or log.get("status")
-            state = next(iter(declared), None) if isinstance(declared, dict) else declared
-            is_test = log.get("log_type") == "test"
-            if is_test and not include_test:
-                continue
-            if states and (state or "none") not in states:
-                continue
-            url = log.get("url") or (log.get("urls") or [None])[0]
-            logs.append(
-                {
-                    "operator": operator.get("name", "?"),
-                    "description": log.get("description", "?"),
-                    "key": log.get("key", ""),
-                    "log_id": log.get("log_id", ""),
-                    "url": (url or "").rstrip("/"),
-                    "state": state or "none",
-                    "test": is_test,
-                    "seal": declared.get("final_tree_head") if isinstance(declared, dict) else None,
-                    "mmd": log.get("mmd"),
-                }
-            )
+        # Both arrays. An operator may run no RFC 6962 log at all - Microsec, GoDaddy, HARICA and SwissSign are
+        # named only under tiled_logs - so reading `logs` alone silently drops a whole protocol and four
+        # operators. The two kinds answer different read APIs, which is what `kind` is for downstream.
+        for kind, entries in (
+            ("rfc6962", operator.get("logs", [])),
+            ("tiled", operator.get("tiled_logs", [])),
+        ):
+            for log in entries:
+                declared = log.get("state") or log.get("status")
+                state = next(iter(declared), None) if isinstance(declared, dict) else declared
+                is_test = log.get("log_type") == "test"
+                if is_test and not include_test:
+                    continue
+                if states and (state or "none") not in states:
+                    continue
+                monitoring = (log.get("monitoring_url") or "").rstrip("/")
+                url = (
+                    log.get("url")
+                    or (log.get("urls") or [None])[0]
+                    or monitoring
+                    or log.get("submission_url")
+                    or ""
+                )
+                logs.append(
+                    {
+                        "operator": operator.get("name", "?"),
+                        "description": log.get("description", "?"),
+                        "key": log.get("key", ""),
+                        "log_id": log.get("log_id", ""),
+                        "kind": kind,
+                        "url": url.rstrip("/"),
+                        "monitoring_url": monitoring,
+                        "submission_url": (log.get("submission_url") or "").rstrip("/"),
+                        "state": state or "none",
+                        "test": is_test,
+                        "seal": declared.get("final_tree_head")
+                        if isinstance(declared, dict)
+                        else None,
+                        "mmd": log.get("mmd"),
+                    }
+                )
     print(
         f"{source.rsplit('/', 1)[-1] if not from_disk else pathlib.Path(source).name}"
-        f" v{document.get('version')}: {len(logs)} logs, states "
-        f"{dict(Counter(x['state'] for x in logs))}"
+        f" v{document.get('version')}: {len(logs)} logs "
+        f"{dict(Counter(x['kind'] for x in logs))}, states {dict(Counter(x['state'] for x in logs))}"
     )
     return logs
 

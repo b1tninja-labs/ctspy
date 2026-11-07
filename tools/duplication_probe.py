@@ -463,11 +463,20 @@ def candidate_fleet(args: argparse.Namespace) -> list[dict]:
     if args.list == "enforcement":
         return usable_logs()
     source = ALL_LOGS_LIST if args.list == "all" else args.list
-    return list_logs(
+    entries = list_logs(
         source,
         states=set(args.state) or None,
         include_test=args.include_test,
     )
+    # Tiled logs answer the Static CT API - checkpoints and tiles, not get-sth and get-entries - so a pairwise
+    # entry comparison cannot reach them. Saying so is the difference between a smaller fleet and a wrong one.
+    rfc6962 = [entry for entry in entries if entry["kind"] == "rfc6962"]
+    skipped = len(entries) - len(rfc6962)
+    if skipped:
+        print(
+            f"  {skipped} tiled (Static CT API) logs skipped: this tool speaks RFC 6962's read API only"
+        )
+    return rfc6962
 
 
 def main() -> int:
