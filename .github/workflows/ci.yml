@@ -16,7 +16,7 @@ jobs:
       - run: python -m pip install -e ".[dev]"
       - run: ruff check .
       - run: ruff format --check .
-      - run: mypy ctspy
+      - run: mypy ctspy tests
       # check_dist inspects a built wheel, and the generated workflow never built one. The step failed
       # identically at home and in CI ("no wheel in dist/"); it only ever looked green locally because
       # dist/ held a wheel left over from an earlier manual build, which is a cache pretending to be a

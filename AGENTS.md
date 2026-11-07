@@ -14,7 +14,7 @@ what the library is for. Read those three before changing anything.
     python -m pytest -q tests/test_public_api.py::test_stubs_are_loud
     python -m ruff check .
     python -m ruff format --check .
-    python -m mypy ctspy
+    python -m mypy ctspy tests
 
 The first line installs the dev extras. The six commands after it are the gates,
 and all six must pass before a change is finished. CI runs the same set on Linux

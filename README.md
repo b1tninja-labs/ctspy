@@ -108,7 +108,7 @@ Every gate in [AGENTS.md](AGENTS.md) must pass, on Linux and Windows alike:
 
 ```bash
 ruff check . && ruff format --check .
-mypy ctspy
+mypy ctspy tests
 pytest -q --cov
 python -O -m pytest -q
 ```
