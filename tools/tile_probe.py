@@ -71,25 +71,24 @@ def _iso(ms: int) -> str:
 
 
 HOST_SUBSTITUTIONS: set[str] = set()  # URLs only reachable through the other Google host form
+CANDIDATE_WIDTHS = (256, 1024, 4096, 8192)  # tested in order; 256 is what was observed on Google
 
 
 def _expand(url: str) -> list[str]:
-    """Every host form a Google-hosted monitoring prefix can be reached by, most-likely first.
+    """One URL, deliberately. The alternative Google hostname is a trap, and this is the evidence.
 
-    Observed against production: `tile/data/1000` is 404 through the `monitoring_url` Chrome
-    publishes for ParcelYard2026h2 (`https://storage.googleapis.com/<bucket>`) and 200 through the
-    bucket's own load-balancer hostname (`https://<bucket>`). Without the retry, a whole log reads
-    as though it refuses to serve its tiles, which is false; with it, the substitution is recorded
-    so a plan can see that the published prefix is not the only way in.
+    `https://parcelyard2026h2.prod.certificate.transparency.goog/tile/data/<N>` answers **200 with
+    `text/html`, 39,531 bytes of Google boilerplate** for every N tried - 0, 6419231, 6419232 -
+    including indices that cannot exist in a 1.6-billion-entry tree. The form Chrome publishes,
+    `https://storage.googleapis.com/<bucket>/...`, answers a proper GCS XML 404 instead. So the
+    "200 where the published host says 404" that looked like a second door is a soft 404, and a
+    harvester that trusted it would hash an HTML page into its transcript. Rewriting hosts is not
+    attempted; a 200 is only believed when the media type is what the specification promises.
     """
-    prefix = "https://storage.googleapis.com/"
-    if url.startswith(prefix):
-        rest = url[len(prefix) :]
-        return [url, f"https://{rest}"]
     return [url]
 
 
-def get(url: str) -> tuple[bytes, str | None]:
+def get(url: str, expect: str | None = None) -> tuple[bytes, str | None]:
     """GET with `Accept-Encoding: identity`, so the bytes we divide by are the bytes stored."""
     last = "no candidate"
     for candidate in _expand(url):
@@ -100,6 +99,7 @@ def get(url: str) -> tuple[bytes, str | None]:
             with urllib.request.urlopen(  # noqa: S310
                 request, timeout=60.0, context=ssl.create_default_context()
             ) as response:
+                ctype = str(response.headers.get("Content-Type") or "")
                 raw = response.read(MAX_TILE + 1)
         except urllib.error.HTTPError as exc:
             last = f"HTTP {exc.code}"
@@ -109,6 +109,8 @@ def get(url: str) -> tuple[bytes, str | None]:
             continue
         if candidate != url:
             HOST_SUBSTITUTIONS.add(candidate)
+        if expect and not ctype.startswith(expect):
+            return b"", f"Content-Type {ctype!r} is not {expect!r} ({len(raw)} octets)"
         if len(raw) > MAX_TILE:
             return raw, f"more than {MAX_TILE} octets"
         return raw, None
@@ -248,7 +250,7 @@ def tiled_logs(list_path: pathlib.Path) -> list[dict[str, Any]]:
 
 def measure(client_url: str, index: int, notes: list[str]) -> dict[str, Any] | None:
     """Fetch one data tile and reduce it to the numbers the harvest plan needs."""
-    raw, err = get(f"{client_url}/tile/data/{index}")
+    raw, err = get(f"{client_url}/tile/data/{index}", expect="application/octet-stream")
     if err:
         notes.append(f"tile/data/{index}: {err}")
         return None
@@ -293,6 +295,11 @@ def tile_status(client_url: str, index: int) -> str:
                 request, timeout=30.0, context=ssl.create_default_context()
             ) as response:
                 if response.status in (200, 206):
+                    if not str(response.headers.get("Content-Type") or "").startswith(
+                        "application/octet-stream"
+                    ):
+                        # A 200 whose body is not a tile is a soft 404, and it has been seen.
+                        return f"soft-200 {response.headers.get('Content-Type')!r}"
                     if candidate != f"{client_url}/tile/data/{index}":
                         HOST_SUBSTITUTIONS.add(candidate)
                     return "present"
@@ -381,6 +388,41 @@ def derive_entries_per_tile(
     return out
 
 
+def confirm_width(
+    client_url: str, tree_size: int, width: int, notes: list[str]
+) -> dict[str, Any] | None:
+    """Test one candidate tile width directly, in four requests, and refuse it if it does not fit.
+
+    Better than searching for the top of the tree: under a candidate width `w`, a tree of `n`
+    entries has full tiles `0..n//w-1` and no tile at `n//w` (the partial tail is served in a
+    separate `.p/<W>` form). So `n//w` must be absent, `n//w-1` must be present, and it must hold
+    exactly `w` entries. A wrong width is caught by the first two conditions together, so a
+    confirmed width is a falsified-against hypothesis rather than a number that happened to work.
+    """
+    k, remainder = divmod(tree_size, width)
+    if k < 1:
+        return None
+    if tile_status(client_url, k) != "absent":
+        return None
+    if tile_status(client_url, k - 1) != "present":
+        return None
+    last_full = measure(client_url, k - 1, notes)
+    if last_full is None:
+        return None
+    if last_full["entries"] != width:
+        notes.append(
+            f"tile {k - 1} holds {last_full['entries']} entries under a width of {width}: the "
+            "width is falsified by the tile that should be the last full one"
+        )
+        return None
+    return {
+        "width": width,
+        "full_tiles": k,
+        "tail_entries": remainder,
+        "last_full_tile": last_full,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -392,6 +434,11 @@ def main() -> int:
     parser.add_argument("--slug", default=None, help="match a substring of the description instead")
     parser.add_argument(
         "--tile", type=int, default=None, help="fetch this tile index and nothing else"
+    )
+    parser.add_argument(
+        "--search",
+        action="store_true",
+        help="if no candidate width fits, search for the top of the tree (many requests)",
     )
     parser.add_argument("--out", type=pathlib.Path, default=None, help="write the report here")
     args = parser.parse_args()
@@ -439,8 +486,30 @@ def main() -> int:
     if args.tile is not None:
         recent = measure(monitoring, args.tile, notes)
     else:
-        derived = derive_entries_per_tile(monitoring, checkpoint["tree_size"], notes)
-        recent = None if derived is None else (derived.get("tail") or derived.get("previous_tile"))
+        confirmed = None
+        for width in CANDIDATE_WIDTHS:
+            confirmed = confirm_width(monitoring, checkpoint["tree_size"], width, notes)
+            if confirmed:
+                break
+        if confirmed:
+            full_tile = confirmed["last_full_tile"]
+            print(
+                f"  width {confirmed['width']} confirmed: {confirmed['full_tiles']} full tiles, "
+                f"{confirmed['tail_entries']} entries in the partial tail"
+            )
+            derived = {"confirmed_width": confirmed, "previous_tile": full_tile}
+            recent = full_tile
+        elif args.search:
+            derived = derive_entries_per_tile(monitoring, checkpoint["tree_size"], notes)
+            recent = (
+                None if derived is None else (derived.get("tail") or derived.get("previous_tile"))
+            )
+        else:
+            recent = measure(monitoring, 0, notes)
+            notes.append(
+                "no candidate width fitted and --search was not given, so the figures below "
+                "describe one tile of unknown width, not a cost per entry"
+            )
     if recent is None:
         print("no data tile parsed; nothing downstream is claimed")
         for note in notes:
@@ -453,10 +522,11 @@ def main() -> int:
             f"{full['octets']} octets = {full['bytes_per_entry']} bytes per entry; our gzip-9 "
             f"{full['our_gzip9_ratio']}x"
         )
-    print(
-        f"  tile {recent['index']}: {recent['octets']} octets / {recent['entries']} entries = "
-        f"{recent['bytes_per_entry']} bytes per entry; our gzip-9 {recent['our_gzip9_ratio']}x"
-    )
+    if recent is not full:
+        print(
+            f"  tile {recent['index']}: {recent['octets']} octets / {recent['entries']} entries = "
+            f"{recent['bytes_per_entry']} bytes per entry; our gzip-9 {recent['our_gzip9_ratio']}x"
+        )
     print(
         f"  window {recent['first_timestamp_iso']} .. {recent['last_timestamp_iso']}; kinds "
         f"{recent['kinds']}; {recent['distinct_keys']} distinct keys of {recent['entries']}; "
