@@ -6,6 +6,21 @@ Primary documents are listed in `docs/rfc-map.md` with statuses and known errata
 The obligation table in `ROADMAP.md` is the work queue, and `README.md` explains
 what the library is for. Read those three before changing anything.
 
+## Finding work
+
+If the person gave you a task, do that task.
+
+If you arrived with nothing to do, run this from this directory:
+
+    python ../sdk-forge/loop.py pickup --who <your name> --project ctspy
+
+Its output is your assignment: one row, already claimed for you, with what to build, the commands that prove
+it and the ways to end it. The board decides the order of work, so the row it gives you is the row to work,
+even if it is in another project. `NO WORK` is a real answer: ask the person what to work on.
+
+Without the workspace beside this repository, read `.forge/packet.md` if it exists. If it does not, ask what
+to work on.
+
 ## Commands
 
     python -m pip install -e ".[dev]"
