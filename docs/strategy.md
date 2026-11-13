@@ -42,3 +42,13 @@ One string everywhere: the distribution, the import and the console script. A na
 means one thing in the installer, in `import` and on `PATH` is the only arrangement that
 cannot surprise anyone, and it is also why this project does not sit one edit away from a
 project that already exists.
+
+## Signature verification
+
+The one runtime dependency is `sigwire[verify]` (2026-11-13). Why the standard library is not enough: a
+pure-Python P-256 verifier was the first pass, and it was slow (the suite took 3.2 seconds against 0.7 now)
+and was a second copy of arithmetic that the portfolio keeps in one place. The owner's rule is that
+cryptographic primitives come from `cryptography`, and `sigwire.verify` is the strict seam over it for
+every project that verifies a signature (PORTFOLIO.md section 9 item 15; `sigprim` merged into it). What
+stays here is CT-specific and wire-level: reading the SPKI, reading the DER signature strictly, and
+computing the log ID. The `cryptography` floor is whatever `sigwire[verify]` declares.

@@ -24,14 +24,24 @@ caller rediscover that later.
 
 from __future__ import annotations
 
+import hashlib
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
+from . import certscan
 from .ecdsa import EcdsaKey, verify_sha256
-from .entry import MerkleTreeLeaf
+from .entry import MerkleTreeLeaf, PrecertEntry, TimestampedEntry
 from .errors import VerificationError
 from .transcript import Reader, TranscriptError
 
-__all__ = ["SignedCertificateTimestamp", "parse", "parse_list", "verify"]
+__all__ = [
+    "EmbeddedResult",
+    "SignedCertificateTimestamp",
+    "parse",
+    "parse_list",
+    "verify",
+    "verify_embedded",
+]
 
 V1_SCT_VERSION = 0x00
 # RFC 5246 section 7.4.1.4.1: HashAlgorithm.sha256 = 4, SignatureAlgorithm.ecdsa = 3.
@@ -158,3 +168,73 @@ def verify(sct: SignedCertificateTimestamp, leaf: MerkleTreeLeaf, log_key: Ecdsa
             f"SCT signature does not verify over the {len(message)}-byte leaf transcript "
             "against the pinned key"
         )
+
+
+@dataclass(frozen=True, slots=True)
+class EmbeddedResult:
+    """What became of one embedded SCT: `True` verified, `False` refuted, `None` not decidable here.
+
+    `None` is its own answer and never a failure: a log that is not among the keys offered, an algorithm
+    this module does not verify, or a chain that carries no issuer all leave the signature unchecked, and
+    reporting them as `False` would call a log forged because the caller did not pin it.
+    """
+
+    sct: SignedCertificateTimestamp
+    verified: bool | None
+    reason: str
+
+
+def verify_embedded(
+    chain: Sequence[bytes], log_keys: Mapping[bytes, EcdsaKey]
+) -> tuple[EmbeddedResult, ...]:
+    """Check every SCT embedded in `chain[0]` against the logs in `log_keys`, as served in a TLS handshake.
+
+    `chain` is the certificates a server sent, DER, leaf first: `chain[1]` is taken to be the leaf's issuer.
+    `log_keys` maps a log id to its pinned key. For each SCT the signed entry is rebuilt from the chain as
+    RFC 6962 section 3.2 paragraph 9 allows: a `PreCert` whose `tbs_certificate` is the final certificate's
+    TBS with the SCT extension deleted (`certscan.tbs_without_sct`, a walk of the DER and not a search for
+    the OID) and whose `issuer_key_hash` is SHA-256 over `chain[1]`'s exact `SubjectPublicKeyInfo`
+    (`certscan.subject_public_key_info`). That reconstruction is what the log signed even when the
+    precertificate came from a Precertificate Signing Certificate, because the paragraph says the issuer and
+    Authority Key Identifier were rewritten to the final issuer's.
+
+    Returns one `EmbeddedResult` per SCT in list order, and an empty tuple when the certificate has no SCT
+    extension ("no SCTs" and "could not read the certificate" differ: the latter raises `CertScanError`).
+    A log that is not pinned is `verified=None`, never `False`; a pinned log whose signature does not verify
+    over the rebuilt entry is `False`, with the reason `sct.verify` gave.
+    """
+    if not chain:
+        raise VerificationError("an empty chain has no certificate to read SCTs from")
+    leaf = chain[0]
+    payload = certscan.embedded_sct_list(leaf)
+    if payload is None:
+        return ()
+    scts = parse_list(payload)
+    issuer = chain[1] if len(chain) > 1 else None
+    tbs = certscan.tbs_without_sct(leaf)
+    issuer_key_hash = (
+        hashlib.sha256(certscan.subject_public_key_info(issuer)).digest() if issuer else None
+    )
+    results: list[EmbeddedResult] = []
+    for item in scts:
+        key = log_keys.get(item.log_id)
+        if key is None:
+            results.append(EmbeddedResult(item, None, f"log {item.log_id.hex()} is not pinned"))
+        elif (item.hash_algorithm, item.signature_algorithm) != (_V1_HASH_SHA256, _V1_SIG_ECDSA):
+            results.append(EmbeddedResult(item, None, "the SCT declares an unsupported algorithm"))
+        elif issuer_key_hash is None:
+            results.append(EmbeddedResult(item, None, "the chain carries no issuer certificate"))
+        else:
+            entry = TimestampedEntry(
+                timestamp=item.timestamp,
+                entry=PrecertEntry(issuer_key_hash, tbs),
+                extensions=item.extensions,
+            )
+            leaf_entry = MerkleTreeLeaf.parse(b"\x00\x00" + entry.transcript())
+            try:
+                verify(item, leaf_entry, key)
+            except VerificationError as exc:
+                results.append(EmbeddedResult(item, False, str(exc)))
+            else:
+                results.append(EmbeddedResult(item, True, "signature verifies"))
+    return tuple(results)

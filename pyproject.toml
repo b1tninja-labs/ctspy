@@ -31,8 +31,11 @@ classifiers = [
   "Typing :: Typed",
 ]
 # Empty unless a module cannot be honest without it. Every entry needs a sentence in
-# README.md explaining why the zero-dependency rule was broken for it.
-dependencies = []
+# README.md explaining why the zero-dependency rule was broken for it. `sigwire[verify]` is the one:
+# ECDSA verification goes through the portfolio's strict seam over `cryptography` (docs/strategy.md,
+# "Signature verification"). It is a sibling checkout until it is published; pytest and mypy find it by
+# the paths below, the way certledger finds asn1core.
+dependencies = ["sigwire[verify]"]
 
 [project.optional-dependencies]
 dev = [
@@ -42,16 +45,15 @@ dev = [
   "hypothesis",
   "ruff",
   "mypy",
-  # The tests use OpenSSL as an oracle for the pure-Python verifier in ctspy/ecdsa.py: signatures
-  # it makes must verify and one-bit changes must not. That is a dev-only use - the package itself
-  # keeps `dependencies = []` - but it has to be declared, or a fresh checkout cannot run its own
-  # suite and the cross-check silently stops being a cross-check.
+  # The tests use OpenSSL as an oracle for ctspy/ecdsa.py: signatures it makes must verify and one-bit
+  # changes must not. `sigwire[verify]` already brings `cryptography` in at runtime; it is declared here
+  # too so the oracle stays declared if that ever changes.
   "cryptography",
   # tools/check_dist.py cannot assert a wheel contains what the docs promise without
   # first being able to build one, so the build dependency belongs in the dev group.
   "build",
 ]
-crypto = ["cryptography>50.0.2"]
+crypto = ["cryptography>=46.0.7"]
 
 [project.urls]
 Homepage = "https://github.com/b1tninja/ctspy"
@@ -74,7 +76,7 @@ include = ["/ctspy/", "/tests/", "/docs/", "/README.md", "/ROADMAP.md", "/CHANGE
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["."]
+pythonpath = [".", "../sigwire"]
 asyncio_mode = "auto"
 addopts = "-ra"
 
@@ -120,3 +122,4 @@ warn_unused_ignores = true
 warn_redundant_casts = true
 no_implicit_optional = true
 ignore_missing_imports = true
+mypy_path = "../sigwire"

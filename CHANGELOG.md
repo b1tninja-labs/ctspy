@@ -6,6 +6,22 @@ The format follows Keep a Changelog, and this project adheres to Semantic Versio
 
 ### Added
 
+- `ctspy.checkpoint`: C2SP signed notes and transparency-log checkpoints (signed-note, tlog-checkpoint and
+  static-ct-api "Checkpoints", read at commit `09f3e51`): strict note and checkpoint parsing, vkeys, and
+  verification with Ed25519 (type 0x01) and RFC 6962 tree head (type 0x05) signatures, applying the specification's
+  rules for unknown, failing and absent signers. Types 0x02, 0x04 and 0x06 are refused by name, not skipped.
+- `sct.verify_embedded`: checks every embedded SCT of a served chain, rebuilding the signed entry from the chain
+  alone; an unpinned log is `verified=None`, never false. `certscan.subject_public_key_info` supplies the issuer key
+  hash input.
+- `docs/rfc-map.md`: RFC 5246's ten verified errata read against the code (none changes a byte ctspy handles).
+
+### Changed
+
+- ECDSA verification moved to `sigwire.verify` (`sigwire[verify]`, now the one runtime dependency; a sibling
+  checkout found through `pyproject.toml`). `ctspy/ecdsa.py` keeps the CT-specific SPKI and DER readers; the
+  pure-Python curve arithmetic is deleted. `tools/fetch_evidence.py` and `tools/check_precert_reconstruction.py`
+  call `certscan` instead of their own DER helpers.
+
 - `ctspy.certscan`: finds the embedded SCT list and the precertificate `TBSCertificate` by walking the certificate's
   DER (strict: minimal lengths, no trailing bytes, one extensions field) instead of searching its bytes for the OID,
   which a crafted certificate could fool. `entry.parse_extra_data` now refuses a precert chain with a second

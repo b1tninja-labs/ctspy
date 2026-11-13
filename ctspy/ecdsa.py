@@ -1,32 +1,31 @@
-"""ECDSA over NIST P-256 with SHA-256, in pure Python.
+"""ECDSA over NIST P-256 with SHA-256: the CT-shaped edge around `sigwire.verify`.
 
-**Why this file exists instead of a dependency.** `ctspy/AGENTS.md` invariant 4 keeps the runtime
-dependency list empty, and RFC 9162 section 10.2.2 registers exactly two signature algorithms for
-CT logs - `ecdsa_secp256r1_sha256` (0x0403) and `ed25519` (0x0807) - so the surface needed is one
-curve and one hash, not a general-purpose crypto layer. Verification only: nothing here can produce
-a signature, which removes the whole class of constant-time and nonce-reuse problems that make
-writing ECDSA yourself genuinely dangerous. Signing stays with an HSM or a library that has been
-through that fire.
+**What this file is now.** It used to hold a pure-Python P-256 verifier. The portfolio rule (PORTFOLIO.md
+section 9 item 15) is that signature verification goes through `sigwire[verify]`, a strict seam over the
+`cryptography` package, so the curve arithmetic moved there and the copy here was deleted. What remains is
+what is specific to Certificate Transparency and to the bytes a log serves:
 
-What that trade buys has to be paid for in evidence, so the tests do three things rather than one:
-check against vectors derived from FIPS 186-4's algorithm, cross-check several thousand random
-signatures against OpenSSL through `cryptography` as a *dev* dependency, and verify a signed tree
-head published by a production log. A pure-Python implementation that only agrees with itself is
-worth nothing.
+- `EcdsaKey.from_spki`, which reads the base64 SPKI of Chrome's log list and refuses anything but an
+  uncompressed P-256 point on the curve, and whose `log_id` is RFC 9162 section 4.4's SHA-256 over that SPKI;
+- `parse_der_signature`, which reads the DER `ECDSA-Sig-Value` strictly (minimal integers, exact length,
+  nothing trailing), because a lenient parser makes a log artifact that can be rewritten while still
+  verifying;
+- `verify_sha256`, which keeps its contract (False for a signature that is undecodable or does not
+  verify, an exception for a bad key) and delegates the check itself to `sigwire.verify.ecdsa.verify`.
 
-The checks that are load-bearing, in the order an attacker would meet them:
-
-1. the public key is a valid point on the curve, not the point at infinity (invalid-curve attack);
-2. `r` and `s` are both in `[1, n-1]` (`s == 0` is the classic forgery that skips the math);
-3. the DER encoding is canonical - minimal integers, exact length, nothing trailing - because a
-   lenient parser gives signature malleability, and a log artifact that can be rewritten while
-   still verifying is an artifact that can be disagreed about.
+Verification only: nothing here can sign. The OpenSSL oracle tests in `tests/test_signatures.py` stay,
+because they pin this module's own parts (DER strictness, SPKI parsing, the False-not-raise contract) and
+now also the seam's agreement with OpenSSL over real log signatures. `P256` and `Curve` are re-exported from
+`sigwire.verify.ecdsa` so existing imports keep working.
 """
 
 from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
+
+from sigwire.verify import ecdsa as _sigwire_ecdsa
+from sigwire.verify.ecdsa import P256, Curve
 
 from .errors import CtspyError
 
@@ -35,73 +34,6 @@ __all__ = ["P256", "Curve", "EcdsaKey", "SignatureDecodeError", "verify_sha256"]
 
 class SignatureDecodeError(CtspyError, ValueError):
     """A signature or public key could not be decoded. Never a verification failure."""
-
-
-@dataclass(frozen=True, slots=True)
-class Curve:
-    """Short Weierstrass parameters, `y^2 = x^3 + a*x + b (mod p)`, with generator G of order n."""
-
-    name: str
-    p: int
-    a: int
-    b: int
-    gx: int
-    gy: int
-    n: int
-
-    def contains(self, x: int, y: int) -> bool:
-        if not (0 <= x < self.p and 0 <= y < self.p):
-            return False
-        return (y * y - (x * x * x + self.a * x + self.b)) % self.p == 0
-
-
-P256 = Curve(
-    name="secp256r1",
-    # FIPS 186-4 D.2.3 / SEC 2: field, a = -3, b, generator and order. Written as literals rather
-    # than derived, so a transcription error shows up as a cross-check failure against OpenSSL
-    # rather than as a self-consistent but wrong curve.
-    p=0xFFFFFFFF00000001000000000000000000000000FFFFFFFFFFFFFFFFFFFFFFFF,
-    a=0xFFFFFFFF00000001000000000000000000000000FFFFFFFFFFFFFFFFFFFFFFFC,
-    b=0x5AC635D8AA3A93E7B3EBBD55769886BC651D06B0CC53B0F63BCE3C3E27D2604B,
-    gx=0x6B17D1F2E12C4247F8BCE6E563A440F277037D812DEB33A0F4A13945D898C296,
-    gy=0x4FE342E2FE1A7F9B8EE7EB4A7C0F9E162BCE33576B315ECECBB6406837BF51F5,
-    n=0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551,
-)
-
-Infinity = None
-Point = tuple[int, int] | None
-
-
-def _add(curve: Curve, first: Point, second: Point) -> Point:
-    if first is None:
-        return second
-    if second is None:
-        return first
-    x1, y1 = first
-    x2, y2 = second
-    modulus = curve.p
-    if x1 == x2:
-        if (y1 + y2) % modulus == 0:
-            return Infinity  # P + (-P) = O
-        slope = (3 * x1 * x1 + curve.a) * pow(2 * y1, -1, modulus) % modulus
-    else:
-        slope = (y2 - y1) * pow(x2 - x1, -1, modulus) % modulus
-    x3 = (slope * slope - x1 - x2) % modulus
-    y3 = (slope * (x1 - x3) - y1) % modulus
-    return (x3, y3)
-
-
-def _multiply(curve: Curve, scalar: int, point: Point) -> Point:
-    """Double-and-add. Only public values go in, so the lack of constant time is not a secret leak."""
-    result: Point = Infinity
-    addend = point
-    k = scalar % curve.n
-    while k:
-        if k & 1:
-            result = _add(curve, result, addend)
-        addend = _add(curve, addend, addend)
-        k >>= 1
-    return result
 
 
 def _read_tlv(data: bytes, offset: int, *, expect: int, what: str) -> tuple[bytes, int]:
@@ -227,19 +159,7 @@ def verify_sha256(key: EcdsaKey, message: bytes, signature_der: bytes) -> bool:
         r, s = parse_der_signature(signature_der)
     except SignatureDecodeError:
         return False
-    order = key.curve.n
-    if not 1 <= r < order or not 1 <= s < order:
-        return False
     digest = hashlib.sha256(message).digest()
-    # FIPS 186-4 4.1.3: leftmost min(Nbits, outlen) bits of the digest, big-endian. Equal here
-    # because P-256's order and SHA-256 are both 256 bits, but written out so a future curve with a
-    # shorter order (P-224, or a hash longer than the curve) cannot silently inherit the shortcut.
-    e = int.from_bytes(digest, "big") >> max(0, 8 * len(digest) - order.bit_length())
-    w = pow(s, -1, order)
-    u1, u2 = (e * w) % order, (r * w) % order
-    base = _multiply(key.curve, u1, (key.curve.gx, key.curve.gy))
-    ours = _multiply(key.curve, u2, (key.x, key.y))
-    point = _add(key.curve, base, ours)
-    if point is None:
-        return False
-    return point[0] % order == r
+    # sigwire answers False for r or s outside [1, n-1] (FIPS 186-5 section 6.4.2 step 1), so the
+    # s == 0 forgery never reaches the backend. The key was validated on the curve when it was built.
+    return _sigwire_ecdsa.verify(key.curve, key.x, key.y, digest, r, s, hash_name="sha256")

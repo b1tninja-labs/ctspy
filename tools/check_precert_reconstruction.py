@@ -9,7 +9,7 @@ the poison extension removed, so the two must agree byte for byte, and the logge
 SHA-256 over the SPKI of a certificate in that chain.
 
 No signature is needed to interpret this, which is what makes it worth having as its own check: it
-validates the reconstruction rule and the helper it depends on (`strip_extension`) against ground truth the
+validates the reconstruction rule and the helper it depends on (`certscan.precert_tbs`) against ground truth the
 log produced itself, before anyone builds a claim on top of it. It found the bug it was written to guard
 against - a walker handed an encoded value instead of its content silently stripped nothing, and the
 result looked like a protocol puzzle rather than a caller error.
@@ -31,15 +31,9 @@ HERE = pathlib.Path(__file__).resolve().parent
 # the two lines turns this into a ModuleNotFoundError that ruff's sort will happily reintroduce.
 sys.path[:0] = [str(HERE), str(HERE.parent)]
 
-from fetch_evidence import (  # noqa: E402
-    POISON_OID_DER,
-    get_json,
-    parse_extra_data,
-    spki_der,
-    strip_extension,
-    tbs_of,
-)
+from fetch_evidence import get_json, parse_extra_data  # noqa: E402
 
+from ctspy import certscan  # noqa: E402
 from ctspy.entry import MerkleTreeLeaf  # noqa: E402
 
 V1_PRECERT_ENTRY = 0x0001
@@ -60,7 +54,7 @@ def check(origin: str, start: int, count: int) -> tuple[int, int, list[str]]:
             continue
         logged = MerkleTreeLeaf.parse(leaf_bytes).entry.entry
         subject, chain = parse_extra_data(base64.b64decode(raw["extra_data"]))
-        rebuilt = strip_extension(tbs_of(subject), POISON_OID_DER)
+        rebuilt = certscan.precert_tbs(subject)
         checked += 1
         if rebuilt == logged.tbs_certificate:
             ok += 1
@@ -68,7 +62,9 @@ def check(origin: str, start: int, count: int) -> tuple[int, int, list[str]]:
             problems.append(
                 f"tbs mismatch: rebuilt {len(rebuilt)} bytes, logged {len(logged.tbs_certificate)}"
             )
-        issuers = {hashlib.sha256(spki_der(cert)).digest() for cert in chain}
+        issuers = {
+            hashlib.sha256(certscan.subject_public_key_info(cert)).digest() for cert in chain
+        }
         if logged.issuer_key_hash not in issuers:
             problems.append(
                 f"issuer hash {logged.issuer_key_hash.hex()[:16]}... is not any of "

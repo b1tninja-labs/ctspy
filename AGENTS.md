@@ -61,8 +61,9 @@ rather than merely incomplete.
    the obligation is wrong: fix the roadmap row and say so in the commit.
 4. **Dependencies.** Portfolio rule: the standard library, plus the `cryptography` package for
    cryptographic primitives only; ASN.1, X.509 and every wire format are our own code (`asn1core` by sibling
-   path if ever needed, never `asn1crypto` or `pyasn1`). `pyproject.toml` here declares no runtime
-   dependencies, and `certscan` walks DER in-tree. Adding a runtime
+   path if ever needed, never `asn1crypto` or `pyasn1`). `pyproject.toml` declares one runtime
+   dependency, `sigwire[verify]` (a sibling checkout until published; the seam over `cryptography` for ECDSA
+   verification, justified in `docs/strategy.md`), and `certscan` walks DER in-tree. Adding a runtime
    dependency needs a paragraph of justification in `docs/strategy.md` explaining
    why the standard library is not enough.
 5. **Scope.** What is deliberately absent is listed under Non-goals in `README.md`.

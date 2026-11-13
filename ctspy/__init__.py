@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from . import (
     apps,
+    certscan,
+    checkpoint,
     cli,
     client,
     ecdsa,
@@ -53,6 +55,8 @@ __all__ = [
     "acceptable",
     "add_chain",
     "apps",
+    "certscan",
+    "checkpoint",
     "cli",
     "client",
     "ecdsa",

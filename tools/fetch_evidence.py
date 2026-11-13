@@ -41,8 +41,8 @@ from collections import Counter
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
+from ctspy import certscan, merkle, sth
 from ctspy import entry as entry_mod
-from ctspy import merkle, sth
 from ctspy.ecdsa import EcdsaKey
 
 LOG_LIST = "https://www.gstatic.com/ct/log_list/v3/log_list.json"
@@ -557,8 +557,6 @@ SCT_HOSTS = (
     "www.debian.org",
     "www.python.org",
 )
-SCT_OID_DER = bytes.fromhex("060a2b06010401d679020402")  # 1.3.6.1.4.1.11129.2.4.2
-POISON_OID_DER = bytes.fromhex("060a2b06010401d679020403")  # 1.3.6.1.4.1.11129.2.4.3
 
 
 def parse_extra_data(leaf, extra: bytes) -> tuple[bytes, list[bytes]]:
@@ -638,47 +636,6 @@ def opaque3(data: bytes, offset: int) -> tuple[bytes, int]:
     return data[offset + 3 : offset + 3 + length], offset + 3 + length
 
 
-def der_length(data: bytes, offset: int) -> tuple[int, int]:
-    """(value, bytes consumed) for a DER length at `offset`."""
-    first = data[offset]
-    if first < 0x80:
-        return first, 1
-    count = first & 0x7F
-    return int.from_bytes(data[offset + 1 : offset + 1 + count], "big"), 1 + count
-
-
-def sct_extension_payload(cert_der: bytes) -> bytes | None:
-    """The SCT list bytes inside a certificate, found by scanning the DER.
-
-    This lives in the evidence tool and not in `ctspy` on purpose: locating an extension is X.509
-    parsing, and the library takes no X.509 dependency. `cryptography` parses this extension into its
-    own type and will not return the original bytes, and the original bytes are the point - the question
-    is whether ctspy can read what a log wrote, not whether two libraries agree on a re-encoding.
-
-    The list comes back out of two nested OCTET STRINGs: the extension value is one (X.509 says so of
-    every extension), and inside it the `digitally-signed struct` of RFC 5246 is another. The TLS
-    extension has neither wrapper, which is the trap: strip one layer and the parser reads a tag byte
-    as a length.
-    """
-    start = 0
-    while (index := cert_der.find(SCT_OID_DER, start)) != -1:
-        cursor = index + len(SCT_OID_DER)
-        if cert_der[cursor : cursor + 1] == b"\x01":  # critical BOOLEAN
-            cursor += 3
-        if cert_der[cursor : cursor + 1] != b"\x04":
-            start = index + 1
-            continue
-        cursor += 1
-        outer, used = der_length(cert_der, cursor)
-        cursor += used
-        block = cert_der[cursor : cursor + outer]
-        if block[:1] == b"\x04":
-            inner, used = der_length(block, 1)
-            return block[1 + used : 1 + used + inner]
-        return block
-    return None
-
-
 def peer_certificate(host: str) -> bytes:
     context = ssl.create_default_context()
     with socket.create_connection((host, 443), timeout=20) as sock:  # noqa: SIM117
@@ -706,7 +663,7 @@ def sct_sweep(out: pathlib.Path) -> None:
     for host in SCT_HOSTS:
         try:
             der = peer_certificate(host)
-            payload = sct_extension_payload(der)
+            payload = certscan.embedded_sct_list(der)
         except Exception as exc:  # a host that will not answer is recorded, not fatal
             documents.append({"host": host, "error": f"{type(exc).__name__}: {exc}"})
             continue
@@ -760,87 +717,6 @@ def all_logs() -> dict:
     return directory
 
 
-def der_len(value: int) -> bytes:
-    if value < 0x80:
-        return bytes([value])
-    body = value.to_bytes((value.bit_length() + 7) // 8, "big")
-    return bytes([0x80 | len(body)]) + body
-
-
-def der_tlv(data: bytes, offset: int) -> tuple[int, int, int]:
-    """(tag, content_start, content_end) for the DER element at `offset`."""
-    tag = data[offset]
-    cursor = offset + 1
-    first = data[cursor]
-    if first < 0x80:
-        length, cursor = first, cursor + 1
-    else:
-        count = first & 0x7F
-        length = int.from_bytes(data[cursor + 1 : cursor + 1 + count], "big")
-        cursor = cursor + 1 + count
-    return tag, cursor, cursor + length
-
-
-def der_elements(data: bytes) -> list[tuple[int, int, int, int, int]]:
-    """(tag, start, end, content_start, content_end) per element of `data`'s content."""
-    out, cursor = [], 0
-    while cursor < len(data):
-        _, content_start, content_end = der_tlv(data, cursor)
-        out.append((data[cursor], cursor, content_end, content_start, content_end))
-        cursor = content_end
-    return out
-
-
-def der_content(der: bytes) -> bytes:
-    """The content octets of one encoded value.
-
-    `der_elements` walks a *list* of elements, so handing it an encoded value makes it see exactly one
-    element and report the structure as empty. That is what happened here: an extension stripper deleted
-    nothing, every reconstruction mismatched by a constant amount, and the evidence pointed at a protocol
-    mystery instead of at this caller error.
-    """
-    _, start, end = der_tlv(der, 0)
-    return der[start:end]
-
-
-def tbs_of(cert_der: bytes) -> bytes:
-    """The TBSCertificate's exact bytes: the first element inside the certificate SEQUENCE."""
-    _, body_start, body_end = der_tlv(cert_der, 0)
-    first = der_elements(cert_der[body_start:body_end])[0]
-    return cert_der[body_start + first[1] : body_start + first[2]]
-
-
-def strip_extension(tbs: bytes, oid_der: bytes) -> bytes:
-    """Delete one extension from a TBSCertificate, re-encoding every enclosing length.
-
-    RFC 6962 section 3.2 says the logged TBSCertificate can be recovered from the final certificate "by
-    extracting the TBSCertificate from it and deleting the SCT extension". The log hashed the re-encoded
-    DER, not the original with a hole in it, so the extension list, its `[3]` wrapper and the TBS itself
-    all need fresh lengths. Checked against ground truth rather than assumed: against the precert entries
-    logs store, this reproduces the logged `TBSCertificate` byte for byte, 29 times out of 29 across
-    Google, DigiCert and Cloudflare (`tools/check_precert_reconstruction.py`).
-    """
-    body = der_content(tbs)
-    block = next((item for item in der_elements(body) if item[0] == 0xA3), None)
-    if block is None:
-        return tbs
-    _, _, _, a3_cs, a3_ce = block
-    wrapper = der_elements(body[a3_cs:a3_ce])[0]
-    seq_cs, seq_ce = a3_cs + wrapper[3], a3_cs + wrapper[4]
-    every = der_elements(body[seq_cs:seq_ce])
-    kept = [
-        body[seq_cs + item[1] : seq_cs + item[2]]
-        for item in every
-        if oid_der not in body[seq_cs + item[1] : seq_cs + item[2]]
-    ]
-    if len(kept) == len(every):
-        return tbs
-    inner = b"\x30" + der_len(sum(len(item) for item in kept)) + b"".join(kept)
-    outer = b"\xa3" + der_len(len(inner)) + inner
-    new_body = body[: block[1]] + outer + body[block[2] :]
-    return b"\x30" + der_len(len(new_body)) + new_body
-
-
 def peer_chain(host: str) -> tuple[bytes, list[bytes]]:
     """The certificate a host presents, and every certificate it sends.
 
@@ -857,18 +733,6 @@ def peer_chain(host: str) -> tuple[bytes, list[bytes]]:
     if not der:
         raise RuntimeError(f"{host}: no certificate offered")
     return der, served
-
-
-def spki_der(cert_der: bytes) -> bytes:
-    """The DER SubjectPublicKeyInfo of a certificate - the thing the log id and issuer hash are over."""
-    from cryptography import x509
-    from cryptography.hazmat.primitives import serialization
-
-    return (
-        x509.load_der_x509_certificate(cert_der)
-        .public_key()
-        .public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
-    )
 
 
 def item_wire(item) -> bytes:
@@ -919,12 +783,11 @@ def sct_signatures(out: pathlib.Path) -> None:
         except Exception as exc:  # a host that will not answer is not a finding
             print(f"  {host}: {type(exc).__name__}: {exc}")
             continue
-        payload = sct_extension_payload(der)
+        payload = certscan.embedded_sct_list(der)
         if payload is None:
             print(f"  {host}: no embedded SCT list")
             continue
-        base_tbs = tbs_of(der)
-        tbs = strip_extension(base_tbs, SCT_OID_DER)
+        tbs = certscan.tbs_without_sct(der)
         for item in sct_module.parse_list(payload):
             known = directory.get(item.log_id)
             if known is None:
@@ -932,7 +795,7 @@ def sct_signatures(out: pathlib.Path) -> None:
             label, key_der, _state = known
             key = EcdsaKey.from_spki(key_der)
             for index, issuer in enumerate(served):
-                issuer_hash = hashlib.sha256(spki_der(issuer)).digest()
+                issuer_hash = hashlib.sha256(certscan.subject_public_key_info(issuer)).digest()
                 entry = TimestampedEntry(
                     timestamp=item.timestamp,
                     entry=PrecertEntry(issuer_hash, tbs),

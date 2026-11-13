@@ -7,7 +7,7 @@ module walks the structure of RFC 5280's `Certificate` and `TBSCertificate` inst
 exists only where the walk finds it: the `[3]` field of the TBSCertificate, one `Extension` SEQUENCE at
 a time.
 
-ctspy declares no runtime dependency (`AGENTS.md` invariant 4), so the walk is in-tree: about a hundred
+ASN.1 and X.509 are our own code (`AGENTS.md` invariant 4), so the walk is in-tree: about a hundred
 lines of strict DER, which is the grain this question needs. It reads only the shape of the certificate
 and interprets nothing inside names, validity or keys. Anything it cannot place exactly is refused with
 `CertScanError`; it never guesses and never returns an empty value for malformed input, because "no SCT
@@ -38,6 +38,7 @@ __all__ = [
     "is_precertificate",
     "precert_tbs",
     "split_certificate",
+    "subject_public_key_info",
     "tbs_without_extension",
     "tbs_without_sct",
 ]
@@ -152,8 +153,8 @@ def _parse_extension(data: bytes, start: int, end: int) -> CertExtension:
     return CertExtension(oid, critical, data[parts[-1][2] : parts[-1][3]], (start, content_end))
 
 
-def _walk(der: bytes) -> tuple[int, int, int, int, list[CertExtension]]:
-    """(tbs_start, tbs_end, ext_field_start, ext_field_end, extensions); the `[3]` field is empty if absent."""
+def _walk(der: bytes) -> tuple[int, int, int, int, list[CertExtension], tuple[int, int]]:
+    """(tbs_start, tbs_end, ext_field_start, ext_field_end, extensions, spki_span); the `[3]` field is empty if absent."""
     tag, body_start, body_end = _tlv(der, 0, len(der))
     if tag != _SEQUENCE:
         raise CertScanError("a certificate is a SEQUENCE")
@@ -168,9 +169,12 @@ def _walk(der: bytes) -> tuple[int, int, int, int, list[CertExtension]]:
         index = 1
     # serial, signature, issuer, validity, subject, subjectPublicKeyInfo
     shape = [_INTEGER, _SEQUENCE, _SEQUENCE, _SEQUENCE, _SEQUENCE, _SEQUENCE]
+    spki_span = (0, 0)
     for want in shape:
         if index >= len(fields) or fields[index][0] != want:
             raise CertScanError("the TBSCertificate fields are not in the RFC 5280 order")
+        # The last field of the shape is the SubjectPublicKeyInfo: element start to content end.
+        spki_span = (fields[index][1], fields[index][3])
         index += 1
     for optional in (_ISSUER_UID, _SUBJECT_UID):
         if index < len(fields) and fields[index][0] == optional:
@@ -190,13 +194,24 @@ def _walk(der: bytes) -> tuple[int, int, int, int, list[CertExtension]]:
             raise CertScanError("an extensions field with no extensions")
     if index != len(fields):
         raise CertScanError("fields after the extensions, or a second extensions field")
-    return body_start, tbs_end, field[0], field[1], extensions
+    return body_start, tbs_end, field[0], field[1], extensions, spki_span
 
 
 def split_certificate(der: bytes) -> tuple[bytes, tuple[CertExtension, ...]]:
     """The exact TBSCertificate octets and its extensions, in the order the certificate lists them."""
-    tbs_start, tbs_end, _, _, extensions = _walk(der)
+    tbs_start, tbs_end, _, _, extensions, _ = _walk(der)
     return der[tbs_start:tbs_end], tuple(extensions)
+
+
+def subject_public_key_info(der: bytes) -> bytes:
+    """The exact DER `SubjectPublicKeyInfo` of a certificate: the bytes a log's `issuer_key_hash` covers.
+
+    RFC 6962 section 3.2 defines `issuer_key_hash` as the SHA-256 of the issuer's `SubjectPublicKeyInfo`, so
+    the octets must be the certificate's own and not a re-encoding. Raises `CertScanError` for a certificate
+    the walk cannot place.
+    """
+    spki_span = _walk(der)[5]
+    return der[spki_span[0] : spki_span[1]]
 
 
 def _only(extensions: tuple[CertExtension, ...], oid: str) -> CertExtension | None:
@@ -236,7 +251,7 @@ def tbs_without_extension(der: bytes, oid: str) -> bytes:
     back unchanged. Removing the only extension is refused: RFC 5280 does not allow an empty extensions
     field, and which encoding a log would have hashed then is not something to guess.
     """
-    tbs_start, tbs_end, field_start, field_end, extensions = _walk(der)
+    tbs_start, tbs_end, field_start, field_end, extensions, _ = _walk(der)
     target = _only(tuple(extensions), oid)
     if target is None:
         return der[tbs_start:tbs_end]

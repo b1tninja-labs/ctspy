@@ -77,12 +77,13 @@ document, which is the honest grain size for a plan. See [docs/rfc-map.md](docs/
 
 | Module | Responsibility |
 |---|---|
-| `sct` | v1 timestamp structure, list parsing and signature verification (RFC 6962 section 3.2; RFC 9162's v2 is not implemented) |
+| `sct` | v1 timestamp structure, list parsing, signature verification and `verify_embedded` over a served chain (RFC 6962 section 3.2; RFC 9162's v2 is not implemented) |
+| `checkpoint` | C2SP signed notes and checkpoints: parsing, vkeys, Ed25519 and RFC 6962 tree head signatures (static-ct-api) |
 | `certscan` | the embedded SCT list and precertificate TBS, located by DER structure (RFC 6962 sections 3.2, 3.3) |
 | `entry` | `MerkleTreeLeaf`, leaf hashes and `extra_data` (RFC 6962 sections 3.1, 4.6) |
 | `sth` | signed tree heads, timestamps and the STH consistency rule (RFC 9162) |
 | `merkle` | static Merkle trees, leaf and node hash prefixes, proof validation (RFC 9162) |
-| `ecdsa` | private ECDSA P-256 verifier (to move to the sibling `sigwire[verify]`; see ROADMAP) |
+| `ecdsa` | the CT edge around `sigwire.verify`: strict SPKI and DER-signature reading, `log_id`, and `verify_sha256` |
 | `tiles` | stub: log storage layout, fetching and caching (static-ct-api, outside the RFC series) |
 | `client` | stub: add chain, add prechain and the submission endpoints (RFC 6962 sections 4.1, 4.2) |
 | `monitor` | stub: stream reading, diffing and alerting on unexpected issuance |
@@ -98,9 +99,11 @@ document, which is the honest grain size for a plan. See [docs/rfc-map.md](docs/
 
 ## Dependencies
 
-No runtime dependencies. Certificate walking is in-tree (`certscan`). The `cryptography` package is a
-development dependency, an oracle for the tests; the portfolio rule is that it may be added for
-cryptographic primitives only, and that ASN.1, X.509 and every wire format stay our own code.
+One runtime dependency, `sigwire[verify]` (a sibling checkout until it is published), which is a strict seam
+over the `cryptography` package for ECDSA verification: the portfolio rule is that cryptographic primitives
+may come from `cryptography` and that ASN.1, X.509 and every wire format stay our own code. Certificate
+walking is in-tree (`certscan`), and so are the SPKI and signature readers in `ecdsa`. `cryptography` is
+also a development dependency, the oracle for the tests.
 
 ## Install
 
