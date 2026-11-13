@@ -6,6 +6,9 @@ The format follows Keep a Changelog, and this project adheres to Semantic Versio
 
 ### Added
 
+- `ctspy.tiles` (round 8): tile paths and widths, the strict data-tile (`TileLeaf`) parse, the data-tile to level-0-hash-tile check,
+  the subtree hash a tile contributes upward, and a sans-IO `fetch_tile` over a caller-supplied `get`, from C2SP
+  tlog-tiles and static-ct-api at commit `09f3e51`. Invented tile vectors; no production tile yet.
 - `ctspy.checkpoint`: C2SP signed notes and transparency-log checkpoints (signed-note, tlog-checkpoint and
   static-ct-api "Checkpoints", read at commit `09f3e51`): strict note and checkpoint parsing, vkeys, and
   verification with Ed25519 (type 0x01) and RFC 6962 tree head (type 0x05) signatures, applying the specification's
