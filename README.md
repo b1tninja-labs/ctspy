@@ -5,10 +5,10 @@
      the badges stay commented out until the tag exists.
 -->
 
-**Pre-alpha shell.** The package surface, the obligation matrix and the CI gates exist.
-No protocol behaviour is implemented: every public function raises `NotImplementedError`,
-and the test suite records that rather than hiding it. Read
-[ROADMAP.md](ROADMAP.md) before depending on any of it.
+**Pre-alpha.** SCT, signed-tree-head, Merkle-proof, log-entry, certificate-scan and log-list-signature
+code is implemented and tested against real logs. Tile fetching, the submission client, the monitor and
+the policy stub are not: each raises `NotImplementedError` rather than answering. Read
+[ROADMAP.md](ROADMAP.md) for which rows are done and which test pins each.
 
 ctspy -- certificate transparency verification in Python
 
@@ -46,6 +46,9 @@ What works today, as of 2026-11-05 - the list above is the plan, this is the cod
   consistency proofs tying roots this library computed to a signed 3-billion-entry tree, six SCT
   signatures from six logs across four operators, and the precert reconstruction checked against entries
   three independent implementations serve. See [docs/interop.md](docs/interop.md).
+- certificate scanning (`certscan`): the embedded SCT list and the precertificate `TBSCertificate`, found by
+  walking the certificate's DER rather than searching its bytes, so a certificate that spells the extension's
+  OID in a name or in another extension is not mistaken for one that has it
 - Chrome's signed CT log list, verified offline: `loglist` checks the published RSASSA-PKCS1-v1_5/SHA-256
   signature with a pure-Python RSA public operation, so a journaled snapshot stays checkable without trusting the
   transport. It verifies a document and says nothing about whether a certificate is compliant - deciding that is
@@ -74,13 +77,16 @@ document, which is the honest grain size for a plan. See [docs/rfc-map.md](docs/
 
 | Module | Responsibility |
 |---|---|
-| `sct` | timestamp structure, versions and signature verification (RFC 9162) |
+| `sct` | v1 timestamp structure, list parsing and signature verification (RFC 6962 section 3.2; RFC 9162's v2 is not implemented) |
+| `certscan` | the embedded SCT list and precertificate TBS, located by DER structure (RFC 6962 sections 3.2, 3.3) |
+| `entry` | `MerkleTreeLeaf`, leaf hashes and `extra_data` (RFC 6962 sections 3.1, 4.6) |
 | `sth` | signed tree heads, timestamps and the STH consistency rule (RFC 9162) |
 | `merkle` | static Merkle trees, leaf and node hash prefixes, proof validation (RFC 9162) |
-| `tiles` | log storage layout, fetching and caching (RFC 9162) |
-| `client` | add chain, add prechain, get sth and the submission endpoints (RFC 9162) |
-| `monitor` | stream reading, diffing and alerting on unexpected issuance |
-| `policy` | which logs and which artifacts a deployment will accept |
+| `ecdsa` | private ECDSA P-256 verifier (to move to the sibling `sigwire[verify]`; see ROADMAP) |
+| `tiles` | stub: log storage layout, fetching and caching (static-ct-api, outside the RFC series) |
+| `client` | stub: add chain, add prechain and the submission endpoints (RFC 6962 sections 4.1, 4.2) |
+| `monitor` | stub: stream reading, diffing and alerting on unexpected issuance |
+| `policy` | stub: which logs and artifacts a deployment will accept (a non-goal below; see ROADMAP) |
 | `loglist` | verifying Chrome's signed log list (not RFC 9162 - a platform mechanism a monitor has to check) |
 
 ## What it does not do
@@ -89,6 +95,12 @@ document, which is the honest grain size for a plan. See [docs/rfc-map.md](docs/
 - browser policy decisions about which logs are accepted, which belong to the platform
 - certificate issuance, which is enrollkit and pkix
 
+
+## Dependencies
+
+No runtime dependencies. Certificate walking is in-tree (`certscan`). The `cryptography` package is a
+development dependency, an oracle for the tests; the portfolio rule is that it may be added for
+cryptographic primitives only, and that ASN.1, X.509 and every wire format stay our own code.
 
 ## Install
 

@@ -6,6 +6,11 @@ The format follows Keep a Changelog, and this project adheres to Semantic Versio
 
 ### Added
 
+- `ctspy.certscan`: finds the embedded SCT list and the precertificate `TBSCertificate` by walking the certificate's
+  DER (strict: minimal lengths, no trailing bytes, one extensions field) instead of searching its bytes for the OID,
+  which a crafted certificate could fool. `entry.parse_extra_data` now refuses a precert chain with a second
+  precertificate (RFC 6962 erratum 3686). `docs/rfc-map.md` records the RFC 6962 errata and the C2SP specs.
+
 - `ctspy.loglist`: verifies Chrome's signed CT log list (RSASSA-PKCS1-v1_5 with SHA-256) using only the standard
   library, parses the RSA key out of its armoured SPKI, and exposes the key's DER fingerprint for pinning. The
   signature is over the exact octets served - newline included - so snapshots must be written in binary; tests

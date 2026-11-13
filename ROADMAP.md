@@ -24,10 +24,29 @@ drift apart within one release, and the document becomes useless exactly when it
 | `merkle.verify_inclusion()` | RFC 9162 section 2.1.3.2 | `[ok]` | `tests/test_merkle.py::test_the_published_inclusion_proofs_verify` | M1 |
 | `merkle.verify_consistency()` | RFC 9162 section 2.1.4.2 | `[ok]` | `tests/test_merkle.py::test_the_published_consistency_proofs_verify` | M1 |
 | `entry.parse_extra_data()` | RFC 6962 sections 3.1, 3.2, 4.6 (v1, deployed) | `[ok]` | `tests/test_production_extra_data.py::test_rereading_an_entry_rebuilds_the_exact_octets_the_log_sent` | M6 |
-| `tiles.fetch_tile()` | RFC 9162 | `[ ]` | `tests/test_tiles.py::test_fetch_tile` (to be written) | M3 |
-| `client.add_chain()` | RFC 9162 section 5.1 | `[ ]` | `tests/test_client.py::test_add_chain` (to be written) | M4 |
-| `monitor.watch()` | RFC 9162 section 8.2 | `[ ]` | `tests/test_monitor.py::test_watch` (to be written) | M5 |
+| `tiles.fetch_tile()` | static-ct-api and tlog-tiles (C2SP, outside the RFC series; `docs/rfc-map.md`) | `[ ]` | `tests/test_tiles.py::test_fetch_tile` (to be written) | M3 |
+| `client.add_chain()` | RFC 6962 sections 4.1, 4.2 with erratum 3686 (every deployed log speaks v1; RFC 9162 section 5.1 is v2) | `[ ]` | `tests/test_client.py::test_add_chain` (to be written) | M4 |
+| `monitor.watch()` | RFC 6962 section 5.3 (the deployed monitor; RFC 9162 section 8.2 is v2) | `[ ]` | `tests/test_monitor.py::test_watch` (to be written) | M5 |
 | `policy.acceptable()` | design | `[ ]` | `tests/test_policy.py::test_acceptable` (to be written) | - (open question, section 5) |
+| `certscan.embedded_sct_list()` | RFC 6962 section 3.3 paragraph 4 (extension 1.3.6.1.4.1.11129.2.4.2, two OCTET STRING layers) | `[ok]` | `tests/test_certscan.py::test_the_six_live_certificates_yield_the_fixture_lists` | M2 |
+| `certscan.tbs_without_sct()` | RFC 6962 section 3.2 paragraph 9 (delete the SCT extension, re-encode lengths) | `[ok]` | `tests/test_certscan.py::test_an_extension_that_merely_contains_the_oid_bytes_is_kept` | M2 |
+| `certscan.precert_tbs()` | RFC 6962 section 3.2 paragraph 9 (delete the poison extension); equals the logged TBS when the issuer did not change | `[ok]` | `tests/test_certscan.py::test_precert_tbs_equals_the_logged_precert_tbs` | M2 |
+| `certscan.split_certificate()` | RFC 5280 `Certificate`/`TBSCertificate` field order, strict DER; a substring lookup is the defect it replaces | `[ok]` | `tests/test_certscan.py::test_an_oid_inside_another_value_is_not_the_extension` | M2 |
+
+Rows that name no callable are decisions, migrations and prerequisites rather than functions; the matrix tests
+skip them, and the same honesty rule binds them.
+
+| Item | Spec | Status | Where | Milestone |
+|---|---|---|---|---|
+| `sct.verify_embedded` over a served chain: compose `certscan.tbs_without_sct`, the issuer SPKI hash of the chain element the server sent, and `sct.verify`; an unpinned log is `verified=None`, never false | RFC 6962 sections 3.2, 3.3 | `[ ]` | `tests/test_embedded_verify.py::test_production_embedded_scts_verify_from_a_served_chain` (to be written) | M2 |
+| Move the private P-256 verifier (`ctspy/ecdsa.py`) into the sibling seam `sigwire[verify]` (`D:\code\sigwire`, `sigwire.verify`, built on the `cryptography` package) and delete the copy here; the OpenSSL-oracle tests become `sigwire.verify`'s | FIPS 186-5; the portfolio rule on cryptographic primitives | `[ ]` | `tests/test_signatures.py` must stay green through the move; blocked until `sigwire.verify` is wired in here (the merged `sigwire[verify]` verifier exists; the migration waits) | - |
+| Signed-note and checkpoint parsing and verification (the missing half of `tools/tile_probe.py`'s `checkpoint_verified: false`) | C2SP signed-note, tlog-checkpoint at commit `09f3e519fe79bcbdccadcf821182e3b488a14d71` (not yet read) | `[ ]` | `tests/test_checkpoint.py` (to be written) | M3 |
+| Data-tile parse and leaf layout of a static-CT log | C2SP static-ct-api, tlog-tiles at commit `09f3e519fe79bcbdccadcf821182e3b488a14d71` (not yet read) | `[ ]` | `tests/test_tiles.py` (to be written) | M3 |
+| C2SP specifications cited by URL and commit until a primarysource collection exists | `docs/rfc-map.md`, "Documents outside the RFC series" | `[part]` | the pin is recorded; no section is cited because none has been read in full | - |
+| RFC 5246's 10 verified errata read against `DigitallySigned` and the registry bytes in `sct.py` | RFC 5246 (obsolete; frozen into CT v1) | `[ ]` | a note in `docs/rfc-map.md` (to be written) | - |
+| Ed25519 (0x0807): `[no]` until a log in Chrome's list declares it; add a test that fails when any pinned log key is not P-256 | RFC 8032 (6 verified errata) | `[ ]` | `tests/test_signatures.py` (to be written) | - |
+| `tools/fetch_evidence.py` still carries its own DER helpers (`sct_extension_payload` finds the OID by substring, `strip_extension` deletes any extension whose bytes merely contain it); point the evidence tools at `certscan` in a separate commit so the evidence stays byte-comparable | RFC 6962 section 3.2 | `[ ]` | `tools/check_precert_reconstruction.py` (networked; not a gate) | - |
+| `policy.acceptable()`: resolve to `[no]` and delete the stub (it contradicts the README non-goal) | owner decision | `[ ]` | `tests/test_public_api.py::test_stubs_are_loud` | - |
 
 The `Where` column used to name `tests/test_obligations.py`, a file this repository never had. That
 was the row lying about being checkable, which is worse than an honest gap.
@@ -70,6 +89,13 @@ the code existing. Coverage in `pyproject.toml` ratchets in the same commit.
   show it, because "the RFC says X" stops being sufficient evidence the moment the fleet says Y - and, as this
   correction shows, so does "the fleet says Y" stop being evidence once someone has misread the question.
 
+- **RFC 6962 errata, read through rfclib on 2026-11-13.** Erratum 3686 (**verified**, section 4.2): in a
+  precertificate chain only the first element may be a precertificate. It is applied: `entry.parse_extra_data`
+  refuses a stored chain with a second one, pinned by
+  `tests/test_certscan.py::test_a_chain_element_that_is_a_precertificate_is_refused`, and it binds
+  `client.add_chain`. Erratum 4204 (reported, section 3.1): the first `precertificate_chain` certificate must
+  certify the Precertificate, not "the first certificate". Erratum 4286 (reported, editorial, section 3). Only a
+  verified erratum is applied; the details are in `docs/rfc-map.md`.
 - **Erratum 8670** (editorial, held for document update) touches the shift loops of sections 2.1.3.2
   step 4.b.ii and 2.1.4.2 step 6.b.iii: the printed text ends the loop on "until either LSB(fn) is
   set or fn is 0", and the corrector deletes the second clause because `fn == 0` is unreachable
@@ -114,9 +140,9 @@ the code existing. Coverage in `pyproject.toml` ratchets in the same commit.
 - **Where does `policy.acceptable()` sit?** The row is `design` with no ladder rung. Two readings: M6, as
   part of publication, or `[no]` under the section 4 non-goal that browser log-acceptance policy belongs
   to the platform. The row keeps its meaning until that is decided (portfolio decision D24).
-- **Which document does `tiles.fetch_tile()` cite?** The row says RFC 9162, but RFC 9162's outline has no
+- **Which document does `tiles.fetch_tile()` cite?** Settled for now: the C2SP specifications, by URL and commit, in `docs/rfc-map.md`; the owner may still prefer a snapshot. The row used to say RFC 9162, whose outline has no
   tile section (read through rfclib, 2026-11-07); the tile layout deployed logs serve is specified outside
-  the RFC series. The cell is unchanged until the citation is settled.
+  the RFC series, and the row now cites it.
 
 ## 6. Publication checklist
 

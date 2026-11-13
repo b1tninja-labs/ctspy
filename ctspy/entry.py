@@ -25,6 +25,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from . import merkle
+from .certscan import CertScanError, is_precertificate
 from .transcript import Reader, TranscriptError, Writer
 
 __all__ = [
@@ -319,5 +320,18 @@ def parse_extra_data(leaf: MerkleTreeLeaf, data: bytes) -> StoredChain:
             raise TranscriptError(
                 f"extra_data of {len(data)} bytes for a precert entry has bytes after its certificate vector"
             )
+        # RFC 6962 erratum 3686 (verified): of the certificates in a precertificate chain only the first
+        # may be a precertificate. A chain element carrying the poison extension is not a chain a log
+        # could have accepted, so it is refused rather than passed on as an issuer.
+        for position, link in enumerate(read[0], start=1):
+            try:
+                poisoned = is_precertificate(link)
+            except CertScanError:
+                continue  # unreadable as X.509 is not this check's business; the bytes are returned as sent
+            if poisoned:
+                raise TranscriptError(
+                    f"chain certificate {position} of a precert entry is itself a precertificate; "
+                    "RFC 6962 erratum 3686 allows only the first element to be one"
+                )
         return StoredChain(certificate=submitted[0], chain=read[0], authenticated=False)
     raise TranscriptError(f"unhandled LogEntryType 0x{signed.entry_type:04x} in parse_extra_data")

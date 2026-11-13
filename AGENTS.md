@@ -59,7 +59,10 @@ rather than merely incomplete.
 3. **Normative text is never paraphrased from memory.** Fetch it with `rfclib` and
    cite the section. If the text you fetch does not say what the obligation claims,
    the obligation is wrong: fix the roadmap row and say so in the commit.
-4. **Dependencies.** `pyproject.toml` here declares no runtime dependencies. Adding a runtime
+4. **Dependencies.** Portfolio rule: the standard library, plus the `cryptography` package for
+   cryptographic primitives only; ASN.1, X.509 and every wire format are our own code (`asn1core` by sibling
+   path if ever needed, never `asn1crypto` or `pyasn1`). `pyproject.toml` here declares no runtime
+   dependencies, and `certscan` walks DER in-tree. Adding a runtime
    dependency needs a paragraph of justification in `docs/strategy.md` explaining
    why the standard library is not enough.
 5. **Scope.** What is deliberately absent is listed under Non-goals in `README.md`.
@@ -69,6 +72,9 @@ rather than merely incomplete.
 ## Read before implementing
 
 - RFC 9162 is Experimental with 1 erratum on file and none verified: expect variation between implementations and pin tests to real logs.
+- RFC 6962 has a verified erratum, 3686 (only the first element of a precert chain may be a precertificate),
+  applied in `entry.parse_extra_data`; see `docs/rfc-map.md`.
+- Never locate a certificate extension by searching bytes for its OID; use `ctspy.certscan`.
 - RFC 9162 obsoletes RFC 6962; log artifacts from 2013 deployments still follow 6962 shapes, so the reader must accept both.
 
 ## Protocol work
