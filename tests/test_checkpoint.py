@@ -16,6 +16,7 @@ Evidence, with where each piece came from:
 from __future__ import annotations
 
 import base64
+import dataclasses
 import hashlib
 import json
 import pathlib
@@ -24,6 +25,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from ctspy import checkpoint
+from ctspy import sth as sth_module
 from ctspy.checkpoint import NoteError
 from ctspy.ecdsa import EcdsaKey
 from ctspy.errors import VerificationError
@@ -81,7 +83,7 @@ def test_a_vkey_whose_key_id_is_not_the_formulas_is_refused() -> None:
         checkpoint.parse_vkey(SPEC_VKEY.replace("530d903a", "530d903b"))
 
 
-@pytest.mark.parametrize("kind", [0x02, 0x04, 0x06])
+@pytest.mark.parametrize("kind", [0x02, 0x06])
 def test_signature_types_whose_documents_were_not_read_are_refused_not_skipped(kind: int) -> None:
     material = base64.b64encode(bytes([kind]) + b"\x00" * 32).decode()
     with pytest.raises(NoteError, match="not supported"):
@@ -276,3 +278,201 @@ def test_a_type_5_signature_over_another_size_does_not_verify() -> None:
     assert tampered != data
     with pytest.raises(VerificationError, match="does not verify"):
         checkpoint.verify_checkpoint(tampered, [checkpoint.rfc6962_verifier(origin, key)])
+
+
+# -- get-sth and checkpoint, in both directions ------------------------------------------------------
+
+
+def argon_sth() -> sth_module.SignedTreeHeadV1:
+    return sth_module.SignedTreeHeadV1.from_v1_json(ARGON["responses"][0])
+
+
+def test_from_sth_produces_exactly_the_checkpoint_built_by_hand() -> None:
+    by_hand, key, origin = argon_checkpoint()
+    assert checkpoint.from_sth(argon_sth(), origin, key.log_id) == by_hand
+
+
+def test_a_checkpoint_made_from_a_production_sth_verifies_and_converts_back_to_the_same_sth() -> (
+    None
+):
+    _, key, origin = argon_checkpoint()
+    data = checkpoint.from_sth(argon_sth(), origin, key.log_id)
+    checkpoint.verify_checkpoint(data, [checkpoint.rfc6962_verifier(origin, key)])
+    back = checkpoint.to_sth(data, origin, key.log_id)
+    assert back == argon_sth()
+    sth_module.verify(
+        back, key
+    )  # the converted head still carries a signature the log's key accepts
+
+
+def test_to_sth_ignores_other_signature_lines_and_refuses_ambiguity() -> None:
+    data, key, origin = argon_checkpoint()
+    mine = Ed25519PrivateKey.generate()
+    extra = sign_ed25519(mine, "witness.example/w", data.split(b"\n\n", 1)[0] + b"\n")
+    assert checkpoint.to_sth(data + extra, origin, key.log_id) == argon_sth()
+    line = data.split(b"\n\n", 1)[1]
+    with pytest.raises(NoteError, match="not one"):
+        checkpoint.to_sth(data + line, origin, key.log_id)
+    with pytest.raises(NoteError, match="not one"):
+        checkpoint.to_sth(data, "other.example/log", key.log_id)
+
+
+def test_to_sth_refuses_extension_lines_and_a_different_origin_line() -> None:
+    data, key, origin = argon_checkpoint(extra=b"unsigned extension\n")
+    with pytest.raises(NoteError, match="extension"):
+        checkpoint.to_sth(data, origin, key.log_id)
+    clean, key, origin = argon_checkpoint()
+    renamed = clean.replace(origin.encode() + b"\n", b"other.example/log\n", 1)
+    with pytest.raises(NoteError, match="origin"):
+        checkpoint.to_sth(renamed, origin, key.log_id)
+
+
+def test_from_sth_refuses_what_cannot_be_a_checkpoint() -> None:
+    _, key, origin = argon_checkpoint()
+    good = argon_sth()
+    with pytest.raises(NoteError, match="LogID"):
+        checkpoint.from_sth(good, origin, key.log_id[:31])
+    with pytest.raises(NoteError, match="root hash"):
+        checkpoint.from_sth(dataclasses.replace(good, root_hash=b"\x00" * 31), origin, key.log_id)
+    with pytest.raises(NoteError, match="spaces"):
+        checkpoint.from_sth(good, "has space", key.log_id)
+
+
+# -- static log: origin from the submission prefix --------------------------------------------------
+
+
+def test_the_origin_is_the_submission_prefix_without_scheme_or_trailing_slash() -> None:
+    """static-ct-api's own example: `https://rome.ct.example.com/2024h1/` is `rome.ct.example.com/2024h1`."""
+    assert checkpoint.static_log_origin("https://rome.ct.example.com/2024h1/") == (
+        "rome.ct.example.com/2024h1"
+    )
+    assert checkpoint.static_log_origin("https://luoshu2027.trustasia.com/luoshu2027//") == (
+        "luoshu2027.trustasia.com/luoshu2027"
+    )
+    for bad in ("rome.ct.example.com/2024h1", "https://", "://x"):
+        with pytest.raises(NoteError):
+            checkpoint.static_log_origin(bad)
+
+
+def test_a_checkpoint_verifies_against_the_prefix_and_key_a_log_list_gives() -> None:
+    _, key, _ = argon_checkpoint()
+    prefix = "https://ct.googleapis.com/logs/us1/argon2026h2/"
+    spki = base64.b64decode(ARGON["key"])
+    data = checkpoint.from_sth(argon_sth(), checkpoint.static_log_origin(prefix), key.log_id)
+    parsed, signature = checkpoint.verify_static_log_checkpoint(data, prefix, spki)
+    assert parsed.size == ARGON["responses"][0]["tree_size"]
+    assert signature.timestamp == ARGON["responses"][0]["timestamp"]
+
+
+def test_a_valid_signature_under_a_different_origin_line_is_a_forgery() -> None:
+    """The 0x05 signature does not cover the origin, so a head replayed under another name must be refused."""
+    _, key, origin = argon_checkpoint()
+    prefix = "https://ct.googleapis.com/logs/us1/argon2026h2/"
+    data = checkpoint.from_sth(argon_sth(), origin, key.log_id)
+    spki = base64.b64decode(ARGON["key"])
+    replayed = data.replace(origin.encode() + b"\n", b"ct.example.net/other\n", 1)
+    with pytest.raises(VerificationError):
+        checkpoint.verify_static_log_checkpoint(replayed, prefix, spki)
+
+
+def test_a_checkpoint_of_another_log_does_not_verify_under_this_logs_key() -> None:
+    xenon = json.loads((FIXTURES / "xenon2026h2-sth.json").read_text("utf-8"))
+    xenon_key = EcdsaKey.from_spki(base64.b64decode(xenon["key"]))
+    prefix = "https://ct.googleapis.com/logs/eu1/xenon2026h2/"
+    data = checkpoint.from_sth(
+        sth_module.SignedTreeHeadV1.from_v1_json(xenon["responses"][0]),
+        checkpoint.static_log_origin(prefix),
+        xenon_key.log_id,
+    )
+    checkpoint.verify_static_log_checkpoint(data, prefix, base64.b64decode(xenon["key"]))
+    with pytest.raises(VerificationError):
+        checkpoint.verify_static_log_checkpoint(data, prefix, base64.b64decode(ARGON["key"]))
+
+
+# -- type 0x04: the timestamped Ed25519 cosignature of tlog-cosignature --------------------------------
+
+COSIGN_SPEC_INPUT = (
+    b"cosignature/v1\ntime 1679315147\nexample.com/behind-the-sofa\n20852163\n"
+    b"CsUYapGGPo4dkMgIAUqom/Xajj7h2fB2MPA3j2jxq2I=\n"
+)
+
+
+def cosign(
+    private: Ed25519PrivateKey,
+    name: str,
+    text: bytes,
+    timestamp: int,
+    *,
+    message: bytes | None = None,
+) -> bytes:
+    public = private.public_key().public_bytes_raw()
+    signed = message or b"cosignature/v1\ntime " + str(timestamp).encode() + b"\n" + text
+    blob = (
+        checkpoint.key_id(name, 4, public).to_bytes(4, "big")
+        + timestamp.to_bytes(8, "big")
+        + private.sign(signed)
+    )
+    return f"{DASH} {name} {base64.b64encode(blob).decode()}\n".encode()
+
+
+def test_the_cosignature_message_is_the_specifications_example_input() -> None:
+    """tlog-cosignature prints the signature input for this checkpoint at time 1679315147; the key signs it."""
+    private = Ed25519PrivateKey.generate()
+    name = "witness.example/w1"
+    line = cosign(private, name, SPEC_CHECKPOINT_TEXT, 1679315147, message=COSIGN_SPEC_INPUT)
+    data = SPEC_CHECKPOINT_TEXT + b"\n" + line
+    verifier = checkpoint.ed25519_cosigner_verifier(name, private.public_key().public_bytes_raw())
+    parsed, verified = checkpoint.verify_checkpoint(data, [verifier])
+    assert parsed.size == 20852163
+    assert verified[0].timestamp == 1679315147
+
+
+def test_a_cosignature_covers_the_extension_lines_and_the_timestamp() -> None:
+    private = Ed25519PrivateKey.generate()
+    name = "witness.example/w1"
+    verifier = checkpoint.ed25519_cosigner_verifier(name, private.public_key().public_bytes_raw())
+    text = SPEC_CHECKPOINT_TEXT + b"an extension line\n"
+    data = text + b"\n" + cosign(private, name, text, 1700000000)
+    _, verified = checkpoint.verify_checkpoint(data, [verifier])
+    assert verified[0].timestamp == 1700000000
+    with pytest.raises(VerificationError, match="does not verify"):
+        checkpoint.verify_checkpoint(
+            data.replace(b"an extension line", b"another line"), [verifier]
+        )
+    stamped = cosign(private, name, text, 1700000000)
+    blob = base64.b64decode(stamped.split(b" ")[2])
+    later = blob[:4] + (1700000001).to_bytes(8, "big") + blob[12:]
+    forged = f"{DASH} {name} {base64.b64encode(later).decode()}\n".encode()
+    with pytest.raises(VerificationError, match="does not verify"):
+        checkpoint.verify_checkpoint(text + b"\n" + forged, [verifier])
+
+
+def test_the_cosignature_key_id_uses_type_byte_four_and_its_vkey_round_trips() -> None:
+    private = Ed25519PrivateKey.generate()
+    public = private.public_key().public_bytes_raw()
+    name = "witness.example/w1"
+    expected = hashlib.sha256(name.encode() + b"\n" + b"\x04" + public).digest()[:4]
+    verifier = checkpoint.ed25519_cosigner_verifier(name, public)
+    assert verifier.key_id == int.from_bytes(expected, "big")
+    assert checkpoint.parse_vkey(verifier.vkey()) == verifier
+    assert checkpoint.ed25519_verifier(name, public).key_id != verifier.key_id
+
+
+def test_a_verifier_key_whose_base64_contains_a_plus_still_parses() -> None:
+    """The first run of the cosigner test failed one time in about four: base64 has '+', and the vkey splits on it."""
+    public = bytes([62]) * 32  # b64(0x01 || this) contains '+', checked below
+    verifier = checkpoint.ed25519_verifier("example.com/k", public)
+    assert "+" in verifier.vkey().split("+", 2)[2]
+    assert checkpoint.parse_vkey(verifier.vkey()) == verifier
+
+
+def test_a_type_four_signature_body_of_the_wrong_length_is_malformed_not_unverified() -> None:
+    private = Ed25519PrivateKey.generate()
+    name = "witness.example/w1"
+    public = private.public_key().public_bytes_raw()
+    blob = checkpoint.key_id(name, 4, public).to_bytes(4, "big") + b"\x00" * 71
+    data = (
+        SPEC_CHECKPOINT_TEXT + b"\n" + f"{DASH} {name} {base64.b64encode(blob).decode()}\n".encode()
+    )
+    with pytest.raises(NoteError, match="64 bytes"):
+        checkpoint.verify_checkpoint(data, [checkpoint.ed25519_cosigner_verifier(name, public)])

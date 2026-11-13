@@ -15,12 +15,19 @@ decide what a verifier may believe, and all three are enforced here:
   "SHOULD"; refusing is the strict reading and the only one that cannot be talked past);
 - a note with **no** verifying signature from a known key is rejected.
 
-Supported signature types: `0x01` Ed25519 over the note text (verified through `sigwire.verify`), and `0x05`
-the RFC 6962 `TreeHeadSignature` wrapped as static-ct-api defines it (verified through `sth.verify`). The types
-the note specification assigns but defers to documents not read here - `0x02` ECDSA as implemented by
-transparency-dev/witness, `0x04` and `0x06` timestamped cosignatures (c2sp.org/tlog-cosignature) - are refused
-when a verifier is constructed, never skipped: a verifier that quietly accepted a key it cannot use would turn
-a configuration mistake into "no signature verified" later.
+Supported signature types: `0x01` Ed25519 over the note text (verified through `sigwire.verify`), `0x04` the
+timestamped Ed25519 checkpoint cosignature of c2sp.org/tlog-cosignature (the signed message is
+`cosignature/v1`, `time <decimal>`, then the note text; read in the same commit), and `0x05` the RFC 6962
+`TreeHeadSignature` wrapped as static-ct-api defines it (verified through `sth.verify`). Two assigned types are
+refused when a verifier is constructed, never skipped: `0x02` (ECDSA "as implemented by
+transparency-dev/witness", defined by code and not by a document) and `0x06` (timestamped ML-DSA-44; its
+specification is read, but the `cryptography` floor `sigwire[verify]` declares offers no ML-DSA, and ML-DSA is a
+primitive, so it is not written here). A verifier that quietly accepted a key it cannot use would turn a
+configuration mistake into "no signature verified" later.
+
+`from_sth` and `to_sth` are the conversion static-ct-api section "Checkpoints" says a `get-sth` response allows
+"with knowledge of the origin line": no private key is involved, so neither makes a signature genuine. Verify
+the result (`verify_checkpoint`, or `sth.verify` on what `to_sth` returns).
 
 Structural problems raise `NoteError` (the bytes were never a note); a note that parses but is not genuine raises
 `VerificationError`. The two are different incidents, as `errors.py` explains.
@@ -44,6 +51,7 @@ from .transcript import Reader, TranscriptError
 
 __all__ = [
     "SIG_ED25519",
+    "SIG_ED25519_COSIGNATURE",
     "SIG_RFC6962_TREE_HEAD",
     "Checkpoint",
     "NoteError",
@@ -51,22 +59,31 @@ __all__ = [
     "SignedNote",
     "VerifiedSignature",
     "Verifier",
+    "ed25519_cosigner_verifier",
     "ed25519_verifier",
+    "from_sth",
     "key_id",
     "parse_checkpoint",
     "parse_note",
     "parse_vkey",
     "rfc6962_verifier",
+    "static_log_origin",
+    "static_log_verifier",
+    "to_sth",
     "verify_checkpoint",
     "verify_note",
+    "verify_static_log_checkpoint",
 ]
 
 SIG_ED25519 = 0x01
+SIG_ED25519_COSIGNATURE = 0x04
 SIG_RFC6962_TREE_HEAD = 0x05
 _DEFERRED = {
     0x02: "ECDSA note signatures are defined by transparency-dev/witness, not by signed-note",
-    0x04: "timestamped Ed25519 cosignatures are defined by c2sp.org/tlog-cosignature",
-    0x06: "timestamped ML-DSA-44 cosignatures are defined by c2sp.org/tlog-cosignature",
+    0x06: (
+        "ML-DSA-44 cosignatures need an ML-DSA verifier, which the cryptography floor of "
+        "sigwire[verify] does not offer"
+    ),
 }
 
 _EM_DASH_PREFIX = "— "
@@ -235,6 +252,18 @@ def ed25519_verifier(name: str, public_key: bytes) -> Verifier:
     return Verifier(name, key_id(name, SIG_ED25519, public_key), SIG_ED25519, public_key)
 
 
+def ed25519_cosigner_verifier(name: str, public_key: bytes) -> Verifier:
+    """A type-0x04 verifier: a timestamped Ed25519 checkpoint cosignature (c2sp.org/tlog-cosignature)."""
+    if len(public_key) != 32:
+        raise NoteError(f"an Ed25519 public key is 32 bytes, this one is {len(public_key)}")
+    return Verifier(
+        name,
+        key_id(name, SIG_ED25519_COSIGNATURE, public_key),
+        SIG_ED25519_COSIGNATURE,
+        public_key,
+    )
+
+
 def rfc6962_verifier(name: str, log_key: EcdsaKey) -> Verifier:
     """A type-0x05 verifier for a static CT log (static-ct-api): the key ID commits to the 32-byte `LogID`."""
     log_id = log_key.log_id
@@ -244,12 +273,14 @@ def rfc6962_verifier(name: str, log_key: EcdsaKey) -> Verifier:
 
 
 def parse_vkey(text: str) -> Verifier:
-    """Read a verifier key. Only Ed25519 (0x01) is a self-contained vkey here; see the module docstring.
+    """Read a verifier key: Ed25519 (0x01) or an Ed25519 cosigner (0x04); see the module docstring.
 
     The stated key ID must equal the one the formula gives, because the spec says the name and ID "MUST match
     those used in the signatures" and an ID that does not follow from the key is a transcription error.
     """
-    parts = text.split("+")
+    parts = text.split(
+        "+", 2
+    )  # base64 has '+' in it; a key name may not, so only the first two split
     if len(parts) != 3:
         raise NoteError("a verifier key is '<name>+<hex key id>+<base64 type||key>'")
     name, hex_id, material = parts
@@ -264,11 +295,14 @@ def parse_vkey(text: str) -> Verifier:
         raise NoteError(
             f"signature type 0x{signature_type:02x} is not supported: {_DEFERRED[signature_type]}"
         )
-    if signature_type != SIG_ED25519:
+    if signature_type == SIG_ED25519_COSIGNATURE:
+        verifier = ed25519_cosigner_verifier(name, public_key)
+    elif signature_type == SIG_ED25519:
+        verifier = ed25519_verifier(name, public_key)
+    else:
         raise NoteError(
             f"signature type 0x{signature_type:02x} cannot be a self-contained vkey here"
         )
-    verifier = ed25519_verifier(name, public_key)
     if verifier.key_id != int(hex_id, 16):
         raise NoteError(
             f"the stated key ID {hex_id} is not the {verifier.key_id:08x} that its name and key give"
@@ -290,6 +324,8 @@ def _verify_one(
     if verifier.signature_type == SIG_ED25519:
         ok = _eddsa.verify_ed25519(verifier.public_key, note.text, signature.signature)
         return VerifiedSignature(verifier) if ok else None
+    if verifier.signature_type == SIG_ED25519_COSIGNATURE:
+        return _verify_cosignature(verifier, note, signature)
     if verifier.signature_type == SIG_RFC6962_TREE_HEAD:
         return _verify_tree_head(verifier, note, signature)
     raise VerificationError(  # unreachable for the constructors above; a hand-built Verifier lands here
@@ -297,18 +333,47 @@ def _verify_one(
     )
 
 
-def _verify_tree_head(
+def _verify_cosignature(
     verifier: Verifier, note: SignedNote, signature: NoteSignature
 ) -> VerifiedSignature | None:
-    """static-ct-api: `uint64 timestamp; TreeHeadSignature` signed per RFC 6962 over the checkpoint's head."""
-    assert verifier.ecdsa_key is not None  # noqa: S101 - rfc6962_verifier always sets it
+    """tlog-cosignature, Ed25519: `uint64 timestamp` then a 64-byte signature over the cosigned lines.
+
+    The signed message is `cosignature/v1`, `time <ASCII decimal>`, then the checkpoint's lines (origin, size,
+    root, and every extension line - this algorithm, unlike 0x06, covers them), which is exactly the note text
+    once `parse_checkpoint` has confirmed that text is canonical. Verifiers MAY reject a future timestamp;
+    this one returns it and leaves that policy to the caller, who has the clock.
+    """
+    if len(signature.signature) != 8 + 64:
+        raise NoteError(
+            f"a type-0x04 signature body is a uint64 timestamp and 64 bytes, "
+            f"this one is {len(signature.signature)}"
+        )
+    parse_checkpoint(note.text)
+    timestamp = int.from_bytes(signature.signature[:8], "big")
+    message = b"cosignature/v1\ntime " + str(timestamp).encode("ascii") + b"\n" + note.text
+    if not _eddsa.verify_ed25519(verifier.public_key, message, signature.signature[8:]):
+        return None
+    return VerifiedSignature(verifier, timestamp)
+
+
+def _split_rfc6962_body(body: bytes) -> tuple[int, int, int, bytes]:
+    """`RFC6962NoteSignature`: the timestamp, then a `DigitallySigned` as (timestamp, hash, signature, DER)."""
     try:
-        reader = Reader(signature.signature, what="RFC6962NoteSignature")
+        reader = Reader(body, what="RFC6962NoteSignature")
         timestamp = reader.uint64()
         wrapper = reader.take(reader.remaining())
         hash_byte, signature_byte, der = _sth._parse_digitally_signed(wrapper)
     except TranscriptError as exc:
         raise NoteError(f"the type-0x05 signature body is malformed: {exc}") from exc
+    return timestamp, hash_byte, signature_byte, der
+
+
+def _verify_tree_head(
+    verifier: Verifier, note: SignedNote, signature: NoteSignature
+) -> VerifiedSignature | None:
+    """static-ct-api: `uint64 timestamp; TreeHeadSignature` signed per RFC 6962 over the checkpoint's head."""
+    assert verifier.ecdsa_key is not None  # noqa: S101 - rfc6962_verifier always sets it
+    timestamp, hash_byte, signature_byte, der = _split_rfc6962_body(signature.signature)
     checkpoint = parse_checkpoint(note.text)
     if checkpoint.extensions:
         raise NoteError("a type-0x05 checkpoint must not include extension lines")
@@ -374,3 +439,104 @@ def verify_checkpoint(
     if len(set(seen)) != len(seen):
         raise NoteError("a checkpoint must not repeat a (key name, key ID) pair")
     return parse_checkpoint(note.text), verified
+
+
+def static_log_origin(submission_prefix: str) -> str:
+    """static-ct-api "Checkpoints": the origin line is the submission prefix, scheme removed, no trailing slash.
+
+    `https://rome.ct.example.com/2024h1/` gives `rome.ct.example.com/2024h1`, the specification's own example.
+    The log list calls the prefix `submission_url`.
+    """
+    scheme, separator, rest = submission_prefix.partition("://")
+    origin = rest.rstrip("/")
+    if not separator or not scheme or not origin:
+        raise NoteError("a submission prefix is a URL with a scheme, such as https://host/path/")
+    _check_name(origin)
+    return origin
+
+
+def static_log_verifier(submission_prefix: str, spki: bytes) -> Verifier:
+    """The type-0x05 verifier for a static log from what the log list publishes: its submission URL and key."""
+    return rfc6962_verifier(static_log_origin(submission_prefix), EcdsaKey.from_spki(spki))
+
+
+def verify_static_log_checkpoint(
+    data: bytes, submission_prefix: str, spki: bytes
+) -> tuple[Checkpoint, VerifiedSignature]:
+    """Verify what `<monitoring prefix>/checkpoint` served, against the log's published key and prefix.
+
+    On top of `verify_checkpoint`: the origin line must be the one the submission prefix gives. The type-0x05
+    signature does not cover the origin ("the origin line is unauthenticated", static-ct-api), so a valid
+    signature under a pinned key proves nothing about *which log* the text names until this is checked; a
+    mismatch is a `VerificationError`, because that is how a head from one log is replayed as another's.
+    """
+    verifier = static_log_verifier(submission_prefix, spki)
+    parsed, verified = verify_checkpoint(data, [verifier])
+    if parsed.origin != verifier.name:
+        raise VerificationError(
+            f"the checkpoint names the origin {parsed.origin!r}, not {verifier.name!r}, "
+            "which is what the submission prefix gives"
+        )
+    return parsed, verified[0]
+
+
+def from_sth(sth: _sth.SignedTreeHeadV1, origin: str, log_id: bytes) -> bytes:
+    """A v1 STH as the signed note a static CT log serves: static-ct-api's `get-sth` to checkpoint direction.
+
+    Needs the origin line and the 32-byte `LogID` (it is hashed into the key ID) and nothing secret. The
+    signature body is `uint64 timestamp` then the `DigitallySigned` the STH already carried, rebuilt from the
+    algorithm bytes and DER the STH holds; for an STH read with `from_v1_json` the result is byte-identical to
+    the log's own wrapper. Nothing is verified here.
+    """
+    _check_name(origin)
+    if len(log_id) != 32:
+        raise NoteError(f"a LogID is 32 bytes, this one is {len(log_id)}")
+    if len(sth.root_hash) != 32:
+        raise NoteError(f"a SHA-256 root hash is 32 bytes, this one is {len(sth.root_hash)}")
+    if not 0 <= sth.tree_size <= _UINT64_MAX or not 0 <= sth.timestamp <= _UINT64_MAX:
+        raise NoteError("the tree size and the timestamp are RFC 6962 uint64 values")
+    if not 1 <= len(sth.signature) <= 65535:
+        raise NoteError("a DigitallySigned signature is 1 to 65535 bytes")
+    text = f"{origin}\n{sth.tree_size}\n{base64.b64encode(sth.root_hash).decode('ascii')}\n"
+    body = (
+        sth.timestamp.to_bytes(8, "big")
+        + bytes([sth.hash_algorithm, sth.signature_algorithm])
+        + len(sth.signature).to_bytes(2, "big")
+        + sth.signature
+    )
+    blob = key_id(origin, SIG_RFC6962_TREE_HEAD, log_id).to_bytes(4, "big") + body
+    line = f"{_EM_DASH_PREFIX}{origin} {base64.b64encode(blob).decode('ascii')}\n"
+    return (text + "\n" + line).encode("utf-8")
+
+
+def to_sth(data: bytes, origin: str, log_id: bytes) -> _sth.SignedTreeHeadV1:
+    """A static log's checkpoint as the v1 STH `sth.verify` takes: static-ct-api's other direction.
+
+    The signature line to use is the one with the key name `origin` and the key ID the 0x05 formula gives for
+    `log_id`; any other line is somebody else's and is ignored. Nothing is verified: pass the result to
+    `sth.verify` with the log's key. Refused (`NoteError`): no such line, two such lines, an origin line that
+    is not `origin`, extension lines (a 0x05 checkpoint must not carry any), or a malformed body.
+    """
+    if len(log_id) != 32:
+        raise NoteError(f"a LogID is 32 bytes, this one is {len(log_id)}")
+    note = parse_note(data)
+    wanted = key_id(origin, SIG_RFC6962_TREE_HEAD, log_id)
+    lines = [item for item in note.signatures if (item.name, item.key_id) == (origin, wanted)]
+    if len(lines) != 1:
+        raise NoteError(
+            f"the note has {len(lines)} signature lines for {origin!r} with key ID {wanted:08x}, not one"
+        )
+    parsed = parse_checkpoint(note.text)
+    if parsed.origin != origin:
+        raise NoteError(f"the checkpoint names the origin {parsed.origin!r}, not {origin!r}")
+    if parsed.extensions:
+        raise NoteError("a type-0x05 checkpoint must not include extension lines")
+    timestamp, hash_byte, signature_byte, der = _split_rfc6962_body(lines[0].signature)
+    return _sth.SignedTreeHeadV1(
+        timestamp=timestamp,
+        tree_size=parsed.size,
+        root_hash=parsed.root_hash,
+        signature=der,
+        hash_algorithm=hash_byte,
+        signature_algorithm=signature_byte,
+    )

@@ -84,6 +84,7 @@ above applies as it does to an RFC.
 | static-ct-api | <https://github.com/C2SP/C2SP/blob/09f3e519fe79bcbdccadcf821182e3b488a14d71/static-ct-api.md> | tiled log layout, data tiles, the leaf encoding of a static log (`tiles.fetch_tile`) |
 | tlog-tiles | <https://github.com/C2SP/C2SP/blob/09f3e519fe79bcbdccadcf821182e3b488a14d71/tlog-tiles.md> | the tile paths and hash-tile encoding static-ct-api builds on |
 | tlog-checkpoint | <https://github.com/C2SP/C2SP/blob/09f3e519fe79bcbdccadcf821182e3b488a14d71/tlog-checkpoint.md> | the checkpoint a static log signs in place of an STH (`checkpoint.parse_checkpoint`; read) |
+| tlog-cosignature | <https://github.com/C2SP/C2SP/blob/09f3e519fe79bcbdccadcf821182e3b488a14d71/tlog-cosignature.md> | the definition of "origin", and the Ed25519 checkpoint cosignature (type 0x04: `checkpoint.ed25519_cosigner_verifier`; read; the ML-DSA-44 half is read but not implemented) |
 | signed-note | <https://github.com/C2SP/C2SP/blob/09f3e519fe79bcbdccadcf821182e3b488a14d71/signed-note.md> | the signature container a checkpoint is wrapped in (`checkpoint.parse_note`, `verify_note`; read) |
 
 Read and implemented from these on 2026-11-13: signed-note "Format" (UTF-8, no control characters, text ends with a
@@ -93,7 +94,11 @@ types" (0x01 Ed25519, 0x05 RFC 6962 `TreeHeadSignature`; 0x02, 0x04, 0x06 assign
 "Verifier keys"; tlog-checkpoint "Note text" (origin, decimal size without leading zeros, base64 root, opaque
 extension lines) and "Signatures" (no repeated name and key ID); static-ct-api "Checkpoints" (type 0x05: key ID over
 the log ID, body `uint64 timestamp` then the `TreeHeadSignature`, no extension lines). The signed-note example is a
-test vector. Not read: tlog-cosignature, which types 0x04 and 0x06 and the definition of "origin" depend on.
+test vector. tlog-cosignature was read the same day: the "origin" is the checkpoint's first line (for a static CT log
+the submission prefix, `checkpoint.static_log_origin`); the Ed25519 cosignature (0x04) signs `cosignature/v1`,
+`time <decimal>` and then the checkpoint lines, extension lines included, and is implemented; the ML-DSA-44
+cosignature (0x06) signs a `CosignedSubtree` and is not, because `cryptography` 46.0.7 has no ML-DSA. The
+specification prints the 0x04 signature input for an example and no signature, so no third-party vector exists.
 
 Chrome's CT log list (`loglist`) is the other non-RFC source; its signature scheme is RFC 8017 above, and the
 list's own format is Chrome's published schema, recorded in `docs/interop.md`.

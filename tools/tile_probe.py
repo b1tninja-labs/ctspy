@@ -14,10 +14,12 @@ What the numbers are, and are not:
 - the compression ratio is ours. It is labelled `our_gzip9_ratio` because it is what our compressor
   does to those exact bytes, not what a CDN will do to them; it is evidence that a ratio is
   achievable, never the ratio a mirror will get.
-- the checkpoint is parsed, **not verified**. A checkpoint's provenance signature covers a
-  structured serialization `ctspy` does not implement yet, and no static-API log key is pinned
-  anywhere in this repository. Every artifact says `checkpoint_verified: false`. Entries measured
-  from a tile nobody checked are a sizing input, not an attestation.
+- the checkpoint is verified with `ctspy.checkpoint.verify_static_log_checkpoint` against the key
+  and submission prefix the log list declares for that log (`checkpoint_verified` is true only
+  when that returns; otherwise it is false and `checkpoint_verification` carries the reason). That
+  proves a head signed by the declared key under the declared origin, nothing about the tiles: a
+  data tile is not checked against the root here. Entries measured from a tile no inclusion proof
+  ties to the head are a sizing input, not an attestation.
 - entries per tile is measured from tile 0 rather than assumed. The constant lives in an
   implementation, not in the text of the spec, and a wrong guess indexes the wrong tile and
   mis-dates the whole sample.
@@ -49,7 +51,9 @@ from typing import Any
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
+from ctspy import checkpoint as ct_checkpoint
 from ctspy.entry import PrecertEntry, TimestampedEntry, X509Entry
+from ctspy.errors import CtspyError
 from ctspy.transcript import Reader
 
 DEFAULT_LIST = (
@@ -136,6 +140,32 @@ def parse_checkpoint(raw: bytes) -> dict[str, Any]:
     out["sha256"] = hashlib.sha256(raw).hexdigest()
     out["signatures"] = sum(1 for line in lines[3:] if line.startswith("—"))
     return out
+
+
+def verify_log_checkpoint(raw: bytes, log: dict[str, Any]) -> dict[str, Any]:
+    """Verify served checkpoint bytes against the log list's key and submission prefix for `log`.
+
+    Pure: no network. Returns `{"verified": bool, "reason": str | None, ...}`, never raises on a bad
+    checkpoint, because a probe that dies on a log's bad afternoon would hide the finding. A log entry
+    with no key or no submission URL is reported as unverifiable, not as failing.
+    """
+    prefix, key = str(log.get("submission_url") or ""), str(log.get("key") or "")
+    if not prefix or not key:
+        return {"verified": False, "reason": "the log list gives no submission_url or key"}
+    try:
+        parsed, signature = ct_checkpoint.verify_static_log_checkpoint(
+            raw, prefix, base64.b64decode(key, validate=True)
+        )
+    except (CtspyError, ValueError) as exc:
+        return {"verified": False, "reason": f"{type(exc).__name__}: {str(exc)[:200]}"}
+    return {
+        "verified": True,
+        "reason": None,
+        "origin": parsed.origin,
+        "tree_size": parsed.size,
+        "root_hash": parsed.root_hash.hex(),
+        "signed_at_ms": signature.timestamp,
+    }
 
 
 def tile_entry_key(ts_entry: TimestampedEntry) -> tuple[bytes, str]:
@@ -241,6 +271,8 @@ def tiled_logs(list_path: pathlib.Path) -> list[dict[str, Any]]:
                     "id": str(entry.get("id", "")),
                     "state": name,
                     "monitoring_url": monitoring.rstrip("/"),
+                    "submission_url": str(entry.get("submission_url") or ""),
+                    "key": str(entry.get("key") or ""),
                     "usable": bool(monitoring)
                     and not any(entry.get(k) for k in ("rejected", "final_sth")),
                 }
@@ -476,7 +508,14 @@ def main() -> int:
         print(f"checkpoint fetch failed: {err}")
         return 1
     checkpoint = parse_checkpoint(raw)
+    verification = verify_log_checkpoint(raw, chosen)
+    checkpoint["verified"] = verification["verified"]
     print(f"{chosen['slug']}  {monitoring}\n  {checkpoint}")
+    print(
+        "  checkpoint signature verified"
+        if verification["verified"]
+        else f"  checkpoint NOT verified: {verification['reason']}"
+    )
     if "tree_size" not in checkpoint:
         return 1
 
@@ -548,7 +587,8 @@ def main() -> int:
         "tile_0_status": tile0,
         "derivation": derived,
         "tile_measured": recent,
-        "checkpoint_verified": False,
+        "checkpoint_verified": verification["verified"],
+        "checkpoint_verification": verification,
         "notes": notes,
     }
     if args.out:
